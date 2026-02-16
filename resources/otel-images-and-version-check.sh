@@ -67,12 +67,12 @@ for image in $otel_images; do
 
     random_name=$(generate_random_name)
 
-    if [[ $image == *opentelemetry-rhel8-operator* ]]; then
+    if [[ $image == *opentelemetry-rhel9-operator* ]]; then
         log_cmd oc run $random_name --image=$image
         wait_for_pod_running $random_name default
         log_cmd oc logs pod/$random_name | head -n 2
         #check_strings_in_logs $random_name default $OPERATOR_VERSION $OPERATOR_OTEL_COLLECTOR_VERSION $OPERATOR_TARGETALLOCATOR_VERSION
-    elif [[ $image == *opentelemetry-target-allocator-rhel8* ]]; then
+    elif [[ $image == *opentelemetry-target-allocator-rhel9* ]]; then
         echo "SKIPPED: $image doesn't have a version command"
     else
         log_cmd oc run $random_name --image=$image -- --version

@@ -68,19 +68,19 @@ for image in $tempo_images; do
 
     random_name=$(generate_random_name)
 
-    if [[ $image == *tempo-rhel8@* ]]; then
+    if [[ $image == *tempo-rhel9@* ]]; then
         log_cmd oc run $random_name --image=$image -- --version
         wait_for_pod_running $random_name default
         log_cmd oc logs pod/$random_name
         #check_strings_in_logs $random_name default "$OPERAND_TEMPO_VERSION"
-    elif [[ $image == *tempo-gateway-rhel8* || $image == *tempo-gateway-opa-rhel8* || $image == *tempo-query-rhel8* ]]; then
+    elif [[ $image == *tempo-gateway-rhel9* || $image == *tempo-gateway-opa-rhel9* || $image == *tempo-query-rhel9* ]]; then
         echo "SKIPPED: $image doesn't have a version command"
-    elif [[ $image == *tempo-rhel8-operator@* ]]; then
+    elif [[ $image == *tempo-rhel9-operator@* ]]; then
         log_cmd oc run $random_name --image=$image -- version
         wait_for_pod_running $random_name default
         log_cmd oc logs pod/$random_name
         #check_strings_in_logs $random_name default "$OPERATOR_VERSION" "$OPERATOR_TEMPO_VERSION" "$OPERATOR_TEMPO_QUERY_VERSION"
-    elif [[ $image == *tempo-jaeger-query-rhel8@* ]]; then
+    elif [[ $image == *tempo-jaeger-query-rhel9@* ]]; then
         log_cmd oc run $random_name --image=$image -- version
         wait_for_pod_running $random_name default
         log_cmd oc logs pod/$random_name
