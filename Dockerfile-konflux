@@ -14,7 +14,7 @@ ENV GOPATH=/tmp/go \
     GOCACHE=/tmp/.cache/go-build \
     PATH=$PATH:/tmp/go/bin:/usr/local/go/bin \
     CHAINSAW_VERSION=v0.2.13 \
-    GO_VERSION=1.23.0
+    GO_VERSION=1.24.2
 
 # Install Go and create directories with proper permissions
 RUN curl -Lo /tmp/go.tar.gz https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
