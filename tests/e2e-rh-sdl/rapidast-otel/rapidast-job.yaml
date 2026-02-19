@@ -84,6 +84,9 @@ spec:
           name: config-volume
         - mountPath: /opt/rapidast/results/
           name: results-volume
+        - mountPath: /etc/gcs
+          name: gcs-key
+          readOnly: true
       dnsPolicy: ClusterFirst
       restartPolicy: Never
       schedulerName: default-scheduler
@@ -96,3 +99,6 @@ spec:
       - name: results-volume
         persistentVolumeClaim:
           claimName: rapidast-pvc
+      - name: gcs-key
+        secret:
+          secretName: rapidast-sa-rhosdt-key

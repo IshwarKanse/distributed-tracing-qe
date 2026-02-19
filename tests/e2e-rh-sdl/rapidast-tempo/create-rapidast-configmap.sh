@@ -13,6 +13,10 @@ data:
   rapidastconfig.yaml: |
     config:
       configVersion: 6
+      googleCloudStorage:
+        keyFile: "/etc/gcs/sa-key"
+        bucketName: "secaut-bucket"
+        directory: "rhosdt/tempo"
       results:
         exclusions:
           enabled: True
