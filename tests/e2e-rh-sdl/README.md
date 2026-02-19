@@ -31,6 +31,7 @@ rapidast-{component}/
 ├── assert-create-project.yaml      # Project creation validation
 ├── create-sa.yaml                  # Service account with privileged access
 ├── assert-create-sa.yaml          # Service account validation
+├── gcs-secret.yaml                # GCS SA key secret (generated at runtime)
 ├── create-rapidast-configmap.sh   # Dynamic config generation script
 ├── assert-rapidast-configmap.yaml # ConfigMap validation
 ├── rapidast-job.yaml              # RapiDAST security scan job
@@ -78,21 +79,48 @@ exclusions:
 - OpenShift/Kubernetes cluster with appropriate permissions
 - Chainsaw testing framework installed
 - Target operators (OpenTelemetry or Tempo) deployed
+- GCS service account key JSON file for uploading scan results to the `secaut-bucket` bucket
 
-### Individual Test Execution
+### Running outside of Tekton pipelines (CLI)
 
-```bash
-# Run OpenTelemetry operator security tests
-chainsaw test --config .chainsaw-rh-sdl.yaml --test-dir tests/e2e-rh-sdl/rapidast-otel/
+When running locally or outside the Tekton pipelines, you need to generate the `gcs-secret.yaml` manifest before executing the tests. The Tekton pipelines handle this automatically using the `rapidast-sa-rhosdt-key` Konflux secret.
 
-# Run Tempo operator security tests
-chainsaw test --config .chainsaw-rh-sdl.yaml --test-dir tests/e2e-rh-sdl/rapidast-tempo/
-```
+1. Log in to the target OpenShift cluster:
+
+   ```bash
+   oc login --token=<token> --server=<server>
+   ```
+
+2. Generate the GCS secret manifest for the component you want to test. This uses `--dry-run=client` to produce the YAML locally; the namespace does not need to exist yet as chainsaw creates it during the test run:
+
+   ```bash
+   # For OpenTelemetry
+   kubectl create secret generic rapidast-sa-rhosdt-key \
+     --from-file=sa-key=/path/to/your/gcs-sa-key.json \
+     --namespace=rapidast-otel \
+     --dry-run=client -o yaml > tests/e2e-rh-sdl/rapidast-otel/gcs-secret.yaml
+
+   # For Tempo
+   kubectl create secret generic rapidast-sa-rhosdt-key \
+     --from-file=sa-key=/path/to/your/gcs-sa-key.json \
+     --namespace=rapidast-tempo \
+     --dry-run=client -o yaml > tests/e2e-rh-sdl/rapidast-tempo/gcs-secret.yaml
+   ```
+
+3. Run the chainsaw test:
+
+   ```bash
+   # Run OpenTelemetry operator security tests
+   chainsaw test --config .chainsaw-rh-sdl.yaml --test-dir tests/e2e-rh-sdl/rapidast-otel/
+
+   # Run Tempo operator security tests
+   chainsaw test --config .chainsaw-rh-sdl.yaml --test-dir tests/e2e-rh-sdl/rapidast-tempo/
+   ```
 
 ### Complete SDL Test Suite
 
 ```bash
-# Run all Red Hat Secure Development Lifecycle tests
+# Generate both secret manifests first (see step 2 above), then run all tests
 chainsaw test --config .chainsaw-rh-sdl.yaml --test-dir tests/e2e-rh-sdl/
 ```
 
@@ -107,10 +135,12 @@ The tests use a dedicated Chainsaw configuration file (`.chainsaw-rh-sdl.yaml`) 
 
 1. **Project Setup**: Creates dedicated namespace for Red Hat Secure Development Lifecycle testing
 2. **Service Account Creation**: Establishes privileged service account with cluster access
-3. **Configuration Generation**: Dynamically creates RapiDAST configuration with authentication tokens
-4. **Security Scan Execution**: Runs RapiDAST job with ZAP-based security scanning
-5. **Result Analysis**: Processes JSON and SARIF reports, evaluating risk levels
-6. **Validation**: Asserts successful completion and acceptable security posture
+3. **GCS Secret Creation**: Applies the `rapidast-sa-rhosdt-key` secret for uploading results to Google Cloud Storage
+4. **Configuration Generation**: Dynamically creates RapiDAST configuration with authentication tokens and GCS upload settings
+5. **Security Scan Execution**: Runs RapiDAST job with ZAP-based security scanning
+6. **Result Analysis**: Processes JSON and SARIF reports, evaluating risk levels
+7. **Result Upload**: Uploads scan results to the `secaut-bucket` GCS bucket under the `rhosdt` directory
+8. **Validation**: Asserts successful completion and acceptable security posture
 
 ## Security Scan Results
 
@@ -161,6 +191,20 @@ Tests pass when:
    - Review ZAP reports in job logs
    - Check if findings are legitimate security issues
    - Update exclusion rules if false positives are identified
+
+## Google Cloud Storage Integration
+
+Scan results are uploaded to GCS for centralized storage and analysis:
+
+```yaml
+config:
+  googleCloudStorage:
+    keyFile: "/etc/gcs/sa-key"
+    bucketName: "secaut-bucket"
+    directory: "rhosdt"
+```
+
+The GCS service account key is provided via the `rapidast-sa-rhosdt-key` Kubernetes secret (key: `sa-key`), mounted into the RapiDAST job container at `/etc/gcs/sa-key`. In the Tekton pipelines, this secret is sourced from the Konflux secret store. For local CLI runs, the secret manifest must be generated beforehand (see [Running outside of Tekton pipelines](#running-outside-of-tekton-pipelines-cli)).
 
 ## Integration with CI/CD
 

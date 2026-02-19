@@ -17,6 +17,17 @@ spec:
         file: create-sa.yaml
     - assert:
         file: assert-create-sa.yaml
+  - name: Create GCS secret for RapiDAST
+    try:
+    - apply:
+        file: gcs-secret.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: rapidast-sa-rhosdt-key
+            namespace: rapidast-tempo
   - name: Generate RapiDAST configmap
     try:
     - script:
