@@ -1,0 +1,353 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-scripts
+data:
+  ingestion-test.js: |
+    // Ingestion Performance Test for Tempo
+    // Uses xk6-client-tracing to generate realistic traces at target MB/s
+    import tracing from 'k6/x/tracing';
+    import { Counter } from 'k6/metrics';
+    import { getConfig, getEndpoints, THRESHOLDS } from './lib/config.js';
+    import { getTemplate, ESTIMATED_BYTES_PER_TRACE } from './lib/trace-profiles.js';
+
+    const ingestionFailures = new Counter('tempo_ingestion_failures_total');
+    const tracesTotal = new Counter('tempo_ingestion_traces_total');
+    const bytesTotal = new Counter('tempo_ingestion_bytes_total');
+
+    const config = getConfig();
+    const endpoints = getEndpoints();
+    const traceTemplate = getTemplate(config.ingestion.traceProfile);
+    const estimatedBytesPerTrace = ESTIMATED_BYTES_PER_TRACE[config.ingestion.traceProfile] || 5000;
+    const tracesPerSecond = Math.max(1, Math.ceil(config.ingestion.bytesPerSecond / estimatedBytesPerTrace));
+
+    export const options = {
+        scenarios: {
+            ingestion: {
+                executor: 'constant-arrival-rate',
+                rate: tracesPerSecond,
+                timeUnit: '1s',
+                duration: config.duration,
+                preAllocatedVUs: config.vus.min,
+                maxVUs: config.vus.max,
+            },
+        },
+        thresholds: THRESHOLDS.ingestion,
+    };
+
+    const client = new tracing.Client({
+        endpoint: endpoints.ingestion,
+        exporter: tracing.EXPORTER_OTLP,
+        tls: {
+            insecure: true,
+        },
+    });
+
+    export function setup() {
+        console.log(`
+    ================================================================================
+      TEMPO INGESTION PERFORMANCE TEST
+    ================================================================================
+      Size:              ${config.name}
+      Target Rate:       ${config.ingestion.mbPerSecond} MB/s
+      Traces/sec:        ${tracesPerSecond}
+      Trace Profile:     ${config.ingestion.traceProfile} (~${traceTemplate.spans.length} spans)
+      Duration:          ${config.duration}
+      VUs:               ${config.vus.min} - ${config.vus.max}
+      Endpoint:          ${endpoints.ingestion}
+    ================================================================================
+        `);
+        return {};
+    }
+
+    export default function () {
+        const gen = new tracing.TemplatedGenerator(traceTemplate);
+        try {
+            client.push(gen.traces());
+            tracesTotal.add(1);
+            bytesTotal.add(estimatedBytesPerTrace);
+        } catch (e) {
+            ingestionFailures.add(1);
+            console.error(`Failed to push trace: ${e}`);
+        }
+    }
+
+    export function teardown() {
+        client.shutdown();
+        console.log(`
+    ================================================================================
+      TEST COMPLETE
+    ================================================================================
+        `);
+    }
+  config.js: |
+    // T-Shirt Size Configuration for k6 Performance Tests
+    export const SIZES = {
+        small: {
+            name: 'small',
+            description: 'Light load - suitable for development and CI',
+            ingestion: { mbPerSecond: 0.1, traceProfile: 'small' },
+            query: { queriesPerSecond: 5 },
+            duration: '5m',
+            vus: { min: 5, max: 20 },
+        },
+        medium: {
+            name: 'medium',
+            description: 'Moderate load - typical production baseline',
+            ingestion: { mbPerSecond: 1, traceProfile: 'medium' },
+            query: { queriesPerSecond: 25 },
+            duration: '5m',
+            vus: { min: 10, max: 50 },
+        },
+        large: {
+            name: 'large',
+            description: 'Heavy load - stress testing',
+            ingestion: { mbPerSecond: 5, traceProfile: 'large' },
+            query: { queriesPerSecond: 50 },
+            duration: '5m',
+            vus: { min: 20, max: 100 },
+        },
+        xlarge: {
+            name: 'xlarge',
+            description: 'Extreme load - capacity testing',
+            ingestion: { mbPerSecond: 20, traceProfile: 'xlarge' },
+            query: { queriesPerSecond: 100 },
+            duration: '5m',
+            vus: { min: 50, max: 200 },
+        },
+    };
+
+    export function getConfig(sizeOverride) {
+        const size = sizeOverride || __ENV.SIZE || 'medium';
+        const config = SIZES[size.toLowerCase()];
+        if (!config) {
+            throw new Error(`Unknown size: ${size}. Valid sizes: ${Object.keys(SIZES).join(', ')}`);
+        }
+        const mbPerSecond = parseFloat(__ENV.MB_PER_SECOND) || config.ingestion.mbPerSecond;
+        const traceProfile = __ENV.TRACE_PROFILE || config.ingestion.traceProfile;
+        const bytesPerSecond = Math.floor(mbPerSecond * 1024 * 1024);
+        return {
+            ...config,
+            ingestion: {
+                ...config.ingestion,
+                mbPerSecond: mbPerSecond,
+                traceProfile: traceProfile,
+                bytesPerSecond: bytesPerSecond,
+            },
+            query: {
+                ...config.query,
+                queriesPerSecond: parseInt(__ENV.QUERIES_PER_SECOND) || config.query.queriesPerSecond,
+            },
+            duration: __ENV.DURATION || config.duration,
+            vus: {
+                min: parseInt(__ENV.VUS_MIN) || config.vus.min,
+                max: parseInt(__ENV.VUS_MAX) || config.vus.max,
+            },
+        };
+    }
+
+    export function getEndpoints() {
+        return {
+            ingestion: __ENV.TEMPO_ENDPOINT || 'localhost:4317',
+            query: __ENV.TEMPO_QUERY_ENDPOINT || 'http://localhost:3200',
+            tenant: __ENV.TEMPO_TENANT || '',
+            token: __ENV.TEMPO_TOKEN || '',
+        };
+    }
+
+    export function getTLSConfig() {
+        const queryTLSEnabled = __ENV.TEMPO_QUERY_TLS_ENABLED === 'true';
+        return {
+            queryTLSEnabled: queryTLSEnabled,
+            caFile: __ENV.TEMPO_TLS_CA_FILE || '',
+            tokenFile: __ENV.TEMPO_TOKEN_FILE || '',
+            insecureSkipVerify: __ENV.TEMPO_TLS_INSECURE === 'true',
+        };
+    }
+
+    export const THRESHOLDS = {
+        ingestion: {
+            'tempo_ingestion_bytes_total': ['rate>0'],
+            'tempo_ingestion_traces_total': ['rate>0'],
+            'tempo_ingestion_failures_total': ['rate<1'],
+        },
+        query: {
+            'tempo_query_failures_total': ['rate<1'],
+        },
+        combined: {
+            'tempo_ingestion_bytes_total': ['rate>0'],
+            'tempo_ingestion_traces_total': ['rate>0'],
+            'tempo_ingestion_failures_total': ['rate<1'],
+            'tempo_query_failures_total': ['rate<1'],
+        },
+    };
+
+    export default { SIZES, getConfig, getEndpoints, getTLSConfig, THRESHOLDS };
+  trace-profiles.js: |
+    // Trace Profiles for xk6-client-tracing TemplatedGenerator
+    // Each profile defines a trace tree with service spans, durations, and attributes
+    // Root span always uses service "perftest" for verification query compatibility
+    import tracing from 'k6/x/tracing';
+
+    const defaultSettings = {
+        attributeSemantics: tracing.SEMANTICS_HTTP,
+        randomAttributes: {count: 2, cardinality: 5},
+        randomEvents: {count: 0.1, exceptionCount: 0.1, randomAttributes: {count: 3, cardinality: 10}},
+    };
+
+    // Estimated bytes per trace for each profile (used to calculate traces/sec from MB/s target)
+    export const ESTIMATED_BYTES_PER_TRACE = {
+        small: 4000,
+        medium: 10000,
+        large: 14000,
+        xlarge: 28000,
+    };
+
+    // Small Profile: Startup/MVP (8 spans, 5 services)
+    const smallTemplate = {
+        defaults: defaultSettings,
+        spans: [
+            {service: "perftest", name: "POST /api/orders", duration: {min: 100, max: 500}},
+            {service: "api-gateway", name: "validate-request", duration: {min: 5, max: 20}},
+            {service: "user-service", name: "authenticate", duration: {min: 10, max: 50}, parentIdx: 0},
+            {service: "api-gateway", name: "process-order", duration: {min: 20, max: 100}, parentIdx: 0},
+            {service: "database", name: "check-inventory", duration: {min: 5, max: 30}},
+            {service: "cache", name: "cache-lookup", duration: {min: 1, max: 5}, parentIdx: 3},
+            {service: "database", name: "save-order", duration: {min: 10, max: 50}, parentIdx: 3},
+            {service: "api-gateway", name: "send-notification", duration: {min: 5, max: 20}, parentIdx: 0},
+        ],
+    };
+
+    // Medium Profile: E-commerce/SaaS (19 spans, 14 services)
+    const mediumTemplate = {
+        defaults: defaultSettings,
+        spans: [
+            {service: "perftest", name: "POST /api/v1/checkout", duration: {min: 200, max: 900}},
+            {service: "api-gateway", name: "validate-request", duration: {min: 5, max: 20}},
+            {service: "user-service", name: "authenticate", duration: {min: 10, max: 50}, parentIdx: 0},
+            {service: "user-service", name: "authorize", duration: {min: 5, max: 20}},
+            {service: "order-service", name: "get-cart", duration: {min: 10, max: 40}, parentIdx: 0},
+            {service: "inventory-service", name: "validate-items", duration: {min: 20, max: 80}},
+            {service: "inventory-service", name: "check-stock", duration: {min: 15, max: 60}},
+            {service: "inventory-service", name: "reserve-inventory", duration: {min: 10, max: 50}, parentIdx: 5},
+            {service: "pricing-service", name: "calculate-pricing", duration: {min: 15, max: 70}, parentIdx: 0},
+            {service: "pricing-service", name: "apply-discounts", duration: {min: 5, max: 30}},
+            {service: "payment-service", name: "validate-payment", duration: {min: 50, max: 200}, parentIdx: 0},
+            {service: "payment-service", name: "process-payment", duration: {min: 100, max: 500}},
+            {service: "order-service", name: "create-order", duration: {min: 20, max: 80}, parentIdx: 0},
+            {service: "database", name: "save-order", duration: {min: 10, max: 50}},
+            {service: "message-queue", name: "queue-fulfillment", duration: {min: 5, max: 20}, parentIdx: 12},
+            {service: "shipping-service", name: "calculate-shipping", duration: {min: 20, max: 100}, parentIdx: 0},
+            {service: "notification-service", name: "send-confirmation", duration: {min: 10, max: 50}, parentIdx: 0},
+            {service: "recommendation-engine", name: "update-recommendations", duration: {min: 15, max: 60}, parentIdx: 0},
+            {service: "cache", name: "invalidate-cache", duration: {min: 2, max: 10}, parentIdx: 0},
+        ],
+    };
+
+    // Large Profile: Fintech/Enterprise (24 spans, 15 services)
+    const largeTemplate = {
+        defaults: defaultSettings,
+        spans: [
+            {service: "perftest", name: "POST /api/v2/transactions", duration: {min: 300, max: 1200}},
+            {service: "edge-gateway", name: "waf-scan", duration: {min: 2, max: 10}},
+            {service: "rate-limiter", name: "rate-limit-check", duration: {min: 1, max: 5}, parentIdx: 0},
+            {service: "auth-service", name: "authenticate", duration: {min: 20, max: 80}, parentIdx: 0},
+            {service: "auth-service", name: "verify-mfa", duration: {min: 50, max: 200}},
+            {service: "auth-service", name: "authorize", duration: {min: 10, max: 40}, parentIdx: 3},
+            {service: "user-service", name: "get-user-profile", duration: {min: 15, max: 60}, parentIdx: 0},
+            {service: "account-service", name: "get-account", duration: {min: 20, max: 80}, parentIdx: 0},
+            {service: "account-service", name: "check-balance", duration: {min: 10, max: 40}},
+            {service: "transaction-service", name: "validate-transaction", duration: {min: 30, max: 120}, parentIdx: 0},
+            {service: "fraud-detection", name: "fraud-check", duration: {min: 50, max: 200}},
+            {service: "ml-scoring", name: "ml-score", duration: {min: 30, max: 150}},
+            {service: "risk-engine", name: "risk-assessment", duration: {min: 40, max: 160}, parentIdx: 9},
+            {service: "compliance-service", name: "compliance-check", duration: {min: 20, max: 100}, parentIdx: 0},
+            {service: "compliance-service", name: "aml-verification", duration: {min: 30, max: 150}},
+            {service: "transaction-service", name: "create-transaction", duration: {min: 25, max: 100}, parentIdx: 0},
+            {service: "ledger-service", name: "update-ledger", duration: {min: 20, max: 80}},
+            {service: "database-primary", name: "write-primary", duration: {min: 15, max: 60}},
+            {service: "database-replica", name: "replicate", duration: {min: 10, max: 40}},
+            {service: "event-store", name: "publish-event", duration: {min: 5, max: 20}, parentIdx: 15},
+            {service: "audit-service", name: "audit-log", duration: {min: 10, max: 40}, parentIdx: 0},
+            {service: "notification-service", name: "send-notification", duration: {min: 15, max: 60}, parentIdx: 0},
+            {service: "analytics-service", name: "update-analytics", duration: {min: 20, max: 80}, parentIdx: 0},
+            {service: "cache-layer", name: "invalidate-cache", duration: {min: 2, max: 10}, parentIdx: 0},
+        ],
+    };
+
+    // XLarge Profile: FAANG-scale (47 spans, 40+ services)
+    const xlargeSettings = {
+        attributeSemantics: tracing.SEMANTICS_HTTP,
+        randomAttributes: {count: 3, cardinality: 8},
+        randomEvents: {count: 0.1, exceptionCount: 0.1, randomAttributes: {count: 3, cardinality: 10}},
+    };
+
+    const xlargeTemplate = {
+        defaults: xlargeSettings,
+        spans: [
+            {service: "perftest", name: "POST /api/v3/orders/create", duration: {min: 500, max: 2000}},
+            {service: "edge-cdn", name: "cdn-edge", duration: {min: 1, max: 5}},
+            {service: "edge-gateway", name: "edge-routing", duration: {min: 2, max: 8}},
+            {service: "global-lb", name: "global-lb", duration: {min: 1, max: 5}},
+            {service: "regional-lb", name: "regional-lb", duration: {min: 1, max: 5}, parentIdx: 0},
+            {service: "api-gateway", name: "api-routing", duration: {min: 3, max: 12}, parentIdx: 0},
+            {service: "graphql-gateway", name: "graphql-parse", duration: {min: 5, max: 20}},
+            {service: "auth-service", name: "authenticate", duration: {min: 15, max: 60}, parentIdx: 0},
+            {service: "identity-provider", name: "verify-identity", duration: {min: 20, max: 80}},
+            {service: "session-manager", name: "session-validate", duration: {min: 5, max: 20}, parentIdx: 7},
+            {service: "user-service", name: "get-user", duration: {min: 10, max: 40}, parentIdx: 0},
+            {service: "profile-service", name: "get-profile", duration: {min: 10, max: 40}},
+            {service: "preferences-service", name: "get-preferences", duration: {min: 8, max: 32}, parentIdx: 10},
+            {service: "cart-service", name: "get-cart", duration: {min: 12, max: 48}, parentIdx: 0},
+            {service: "order-service", name: "validate-cart", duration: {min: 15, max: 60}},
+            {service: "inventory-service", name: "check-inventory", duration: {min: 20, max: 80}, parentIdx: 14},
+            {service: "warehouse-service", name: "warehouse-query", duration: {min: 15, max: 60}},
+            {service: "pricing-engine", name: "calculate-pricing", duration: {min: 25, max: 100}, parentIdx: 0},
+            {service: "promotion-service", name: "apply-promotions", duration: {min: 15, max: 60}},
+            {service: "personalization-service", name: "personalize", duration: {min: 20, max: 80}, parentIdx: 0},
+            {service: "recommendation-engine", name: "get-recommendations", duration: {min: 30, max: 120}},
+            {service: "ml-platform", name: "ml-predict", duration: {min: 25, max: 100}},
+            {service: "feature-store", name: "feature-lookup", duration: {min: 10, max: 40}},
+            {service: "fraud-detection", name: "fraud-check", duration: {min: 40, max: 160}, parentIdx: 0},
+            {service: "risk-engine", name: "risk-score", duration: {min: 35, max: 140}},
+            {service: "payment-gateway", name: "payment-route", duration: {min: 10, max: 40}, parentIdx: 0},
+            {service: "payment-processor-1", name: "process-payment-1", duration: {min: 100, max: 400}},
+            {service: "payment-processor-2", name: "process-payment-2", duration: {min: 100, max: 400}, parentIdx: 25},
+            {service: "order-service", name: "create-order", duration: {min: 30, max: 120}, parentIdx: 0},
+            {service: "database-shard-1", name: "write-shard-1", duration: {min: 15, max: 60}},
+            {service: "database-shard-2", name: "write-shard-2", duration: {min: 15, max: 60}, parentIdx: 28},
+            {service: "database-shard-3", name: "write-shard-3", duration: {min: 15, max: 60}, parentIdx: 28},
+            {service: "cache-l1", name: "cache-l1-set", duration: {min: 2, max: 8}, parentIdx: 0},
+            {service: "cache-l2", name: "cache-l2-set", duration: {min: 3, max: 12}},
+            {service: "event-streaming", name: "publish-event", duration: {min: 5, max: 20}, parentIdx: 0},
+            {service: "fulfillment-service", name: "queue-fulfillment", duration: {min: 10, max: 40}, parentIdx: 0},
+            {service: "shipping-service", name: "calculate-shipping", duration: {min: 20, max: 80}},
+            {service: "tracking-service", name: "init-tracking", duration: {min: 10, max: 40}},
+            {service: "notification-hub", name: "notify-hub", duration: {min: 8, max: 32}, parentIdx: 0},
+            {service: "email-service", name: "send-email", duration: {min: 15, max: 60}},
+            {service: "sms-service", name: "send-sms", duration: {min: 20, max: 80}, parentIdx: 38},
+            {service: "push-service", name: "send-push", duration: {min: 10, max: 40}, parentIdx: 38},
+            {service: "analytics-collector", name: "collect-analytics", duration: {min: 5, max: 20}, parentIdx: 0},
+            {service: "metrics-aggregator", name: "aggregate-metrics", duration: {min: 8, max: 32}},
+            {service: "audit-service", name: "audit-log", duration: {min: 10, max: 40}, parentIdx: 0},
+            {service: "compliance-engine", name: "compliance-check", duration: {min: 20, max: 80}, parentIdx: 0},
+            {service: "logging-service", name: "log-event", duration: {min: 3, max: 12}, parentIdx: 0},
+        ],
+    };
+
+    const TRACE_TEMPLATES = {
+        small: smallTemplate,
+        medium: mediumTemplate,
+        large: largeTemplate,
+        xlarge: xlargeTemplate,
+    };
+
+    export function getTemplate(name) {
+        const template = TRACE_TEMPLATES[name.toLowerCase()];
+        if (!template) {
+            throw new Error(`Unknown profile: ${name}. Valid profiles: ${Object.keys(TRACE_TEMPLATES).join(', ')}`);
+        }
+        return template;
+    }
+
+    export default TRACE_TEMPLATES;

@@ -1,0 +1,78 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: verify-metrics
+spec:
+  template:
+    spec:
+      containers:
+      - name: verify-metrics
+        image: ghcr.io/grafana/tempo-operator/test-utils:main
+        command:
+        - /bin/bash
+        - -eux
+        - -c
+        args:
+        - |
+          echo "=== Scraping Tempo distributor metrics ==="
+          curl -s http://tempo-simplest-distributor:3200/metrics > /tmp/distributor-metrics.txt
+
+          echo "=== Scraping Tempo ingester metrics ==="
+          curl -s http://tempo-simplest-ingester:3200/metrics > /tmp/ingester-metrics.txt
+
+          # Extract metrics values (sum all label combinations)
+          extract_metric() {
+            local file="$1"
+            local metric="$2"
+            # Sum all matching metric lines, ignoring comments and empty results
+            val=$(grep "^${metric}" "$file" | grep -v "^#" | awk '{sum += $2} END {print sum+0}')
+            echo "$val"
+          }
+
+          spans_received=$(extract_metric /tmp/distributor-metrics.txt "tempo_distributor_spans_received_total")
+          discarded_spans=$(extract_metric /tmp/distributor-metrics.txt "tempo_discarded_spans_total")
+          refused_spans=$(extract_metric /tmp/distributor-metrics.txt "tempo_receiver_refused_spans")
+          traces_created=$(extract_metric /tmp/ingester-metrics.txt "tempo_ingester_traces_created_total")
+          bytes_received=$(extract_metric /tmp/ingester-metrics.txt "tempo_ingester_bytes_received_total")
+
+          echo ""
+          echo "=== Metrics Summary ==="
+          echo "Spans received:  $spans_received"
+          echo "Discarded spans: $discarded_spans"
+          echo "Refused spans:   $refused_spans"
+          echo "Traces created:  $traces_created"
+          echo "Bytes received:  $bytes_received"
+          echo "======================="
+          echo ""
+
+          # Assert: spans were received
+          if [[ "$spans_received" -eq 0 ]]; then
+            echo "FAIL: No spans were received by the distributor"
+            exit 1
+          fi
+          echo "PASS: $spans_received spans received"
+
+          # Assert: no discarded spans
+          if [[ "$discarded_spans" -ne 0 ]]; then
+            echo "FAIL: $discarded_spans spans were discarded (expected 0)"
+            exit 1
+          fi
+          echo "PASS: No discarded spans"
+
+          # Assert: no refused spans
+          if [[ "$refused_spans" -ne 0 ]]; then
+            echo "FAIL: $refused_spans spans were refused (expected 0)"
+            exit 1
+          fi
+          echo "PASS: No refused spans"
+
+          # Assert: traces were created
+          if [[ "$traces_created" -eq 0 ]]; then
+            echo "FAIL: No traces were created in the ingester"
+            exit 1
+          fi
+          echo "PASS: $traces_created traces created"
+
+          echo ""
+          echo "All metrics assertions PASSED"
+      restartPolicy: Never

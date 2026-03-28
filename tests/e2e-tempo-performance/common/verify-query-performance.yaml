@@ -1,0 +1,86 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: verify-query-performance
+spec:
+  template:
+    spec:
+      containers:
+      - name: verify-query-performance
+        image: ghcr.io/grafana/tempo-operator/test-utils:main
+        command:
+        - /bin/bash
+        - -eux
+        - -c
+        args:
+        - |
+          THRESHOLD=30  # seconds
+          token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+          GATEWAY="https://tempo-simplest-gateway:8080"
+          CURL_OPTS="-s --header \"Authorization: Bearer $token\" --cacert /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+          failed=0
+
+          run_query() {
+            local description="$1"
+            local url="$2"
+            local extra_args="$3"
+
+            echo "--- Query: $description ---"
+            time_total=$(curl -s -o /tmp/query-result.json -w '%{time_total}' \
+              --header "Authorization: Bearer $token" \
+              --cacert /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt \
+              -G "$url" $extra_args)
+
+            echo "Response time: ${time_total}s"
+
+            # Check if response time exceeds threshold
+            if (( $(echo "$time_total > $THRESHOLD" | bc -l) )); then
+              echo "FAIL: Query took ${time_total}s (threshold: ${THRESHOLD}s)"
+              failed=1
+            else
+              echo "PASS: Query completed in ${time_total}s"
+            fi
+            echo ""
+          }
+
+          # Query 1: Search by service name
+          run_query "Search by service name" \
+            "$GATEWAY/api/traces/v1/dev/tempo/api/search" \
+            "--data-urlencode 'q={ resource.service.name=\"perftest\" }'"
+
+          # Query 2: Search with limit
+          run_query "Search with limit=20" \
+            "$GATEWAY/api/traces/v1/dev/tempo/api/search" \
+            "--data-urlencode 'q={ resource.service.name=\"perftest\" }' --data-urlencode 'limit=20'"
+
+          # Query 3: Get a specific trace by ID
+          echo "--- Fetching a trace ID for lookup test ---"
+          trace_id=$(curl -s \
+            --header "Authorization: Bearer $token" \
+            --cacert /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt \
+            -G "$GATEWAY/api/traces/v1/dev/tempo/api/search" \
+            --data-urlencode 'q={ resource.service.name="perftest" }' \
+            --data-urlencode 'limit=1' \
+            | jq -r '.traces[0].traceID // empty')
+
+          if [[ -n "$trace_id" ]]; then
+            run_query "Get trace by ID ($trace_id)" \
+              "$GATEWAY/api/traces/v1/dev/tempo/api/traces/$trace_id" \
+              ""
+          else
+            echo "WARN: Could not fetch a trace ID for lookup test, skipping"
+          fi
+
+          # Query 4: Jaeger API search
+          run_query "Jaeger API search" \
+            "$GATEWAY/api/traces/v1/dev/api/traces" \
+            "--data-urlencode 'service=perftest' --data-urlencode 'limit=20'"
+
+          echo "=== Query Performance Summary ==="
+          if [[ "$failed" -ne 0 ]]; then
+            echo "FAIL: One or more queries exceeded the ${THRESHOLD}s threshold"
+            exit 1
+          fi
+          echo "All queries completed within ${THRESHOLD}s threshold"
+          echo "PASSED"
+      restartPolicy: Never

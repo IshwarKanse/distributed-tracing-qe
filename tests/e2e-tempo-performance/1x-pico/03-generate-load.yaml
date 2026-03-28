@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: generate-load
+spec:
+  completions: 1
+  parallelism: 1
+  template:
+    spec:
+      containers:
+      - name: k6
+        image: ghcr.io/grafana/xk6-client-tracing:v0.0.9
+        command: ["k6", "run", "/scripts/ingestion-test.js"]
+        env:
+        - name: MB_PER_SECOND
+          value: "0.6"
+        - name: TRACE_PROFILE
+          value: "small"
+        - name: DURATION
+          value: "5m"
+        - name: VUS_MIN
+          value: "2"
+        - name: VUS_MAX
+          value: "10"
+        - name: TEMPO_ENDPOINT
+          value: "dev-collector:4317"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+        volumeMounts:
+        - name: k6-scripts
+          mountPath: /scripts/ingestion-test.js
+          subPath: ingestion-test.js
+        - name: k6-scripts
+          mountPath: /scripts/lib/config.js
+          subPath: config.js
+        - name: k6-scripts
+          mountPath: /scripts/lib/trace-profiles.js
+          subPath: trace-profiles.js
+      volumes:
+      - name: k6-scripts
+        configMap:
+          name: k6-scripts
+      restartPolicy: Never
+  backoffLimit: 4
