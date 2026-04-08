@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: verify-traces-jaeger
+spec:
+  template:
+    spec:
+      containers:
+      - name: verify-traces
+        image: ghcr.io/grafana/tempo-operator/test-utils:main
+        command:
+        - /bin/bash
+        - -eux
+        - -c
+        args:
+        - |
+          token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+          curl \
+            -v -G \
+            --header "Authorization: Bearer $token" \
+            --cacert /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt \
+            https://tempo-simplest-gateway:8080/api/traces/v1/dev/api/traces \
+            --data-urlencode "service=perftest" \
+            --data-urlencode "limit=20" \
+            | tee /tmp/jaeger.out
+
+          num_traces=$(jq ".data | length" /tmp/jaeger.out)
+          if [[ "$num_traces" -lt "1" ]]; then
+            echo "FAIL: No traces found via Jaeger API (got $num_traces)"
+            exit 1
+          fi
+          echo "PASS: Found $num_traces traces via Jaeger API"
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: verify-traces-traceql
+spec:
+  template:
+    spec:
+      containers:
+      - name: verify-traces
+        image: ghcr.io/grafana/tempo-operator/test-utils:main
+        command:
+        - /bin/bash
+        - -eux
+        - -c
+        args:
+        - |
+          token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+          curl \
+            -v -G \
+            --header "Authorization: Bearer $token" \
+            --cacert /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt \
+            https://tempo-simplest-gateway:8080/api/traces/v1/dev/tempo/api/search \
+            --data-urlencode 'q={ resource.service.name="perftest" }' \
+            | tee /tmp/tempo.out
+
+          num_traces=$(jq ".traces | length" /tmp/tempo.out)
+          if [[ "$num_traces" -lt "1" ]]; then
+            echo "FAIL: No traces found via TraceQL (got $num_traces)"
+            exit 1
+          fi
+          echo "PASS: Found $num_traces traces via TraceQL"
+      restartPolicy: Never
