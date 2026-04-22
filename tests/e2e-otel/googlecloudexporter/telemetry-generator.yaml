@@ -8,7 +8,7 @@ spec:
     spec:
       containers:
       - name: telemetrygen
-        image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.129.0
+        image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.150.0
         args:
         - traces
         - --otlp-endpoint=googlecloudexporter-collector:4317
@@ -31,7 +31,7 @@ spec:
     spec:
       containers:
       - name: telemetrygen
-        image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.129.0
+        image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.150.0
         args:
         - metrics
         - --otlp-endpoint=googlecloudexporter-collector:4317
@@ -54,7 +54,7 @@ spec:
     spec:
       containers:
       - name: telemetrygen
-        image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.129.0
+        image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.150.0
         args:
         - logs
         - --otlp-endpoint=googlecloudexporter-collector:4317

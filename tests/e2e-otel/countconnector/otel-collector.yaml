@@ -3,7 +3,7 @@ kind: OpenTelemetryCollector
 metadata:
   name: count
 spec:
-  image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.147.0
+  image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.148.0
   mode: deployment
   observability:
     metrics:
@@ -17,21 +17,27 @@ spec:
     processors: {}
     connectors:
       count:
-        logs:
-          dev.log.count:
-            description: The number of logs from each environment.
+        spans:
+          dev.span.count:
+            description: The number of spans from each environment.
             attributes:
               - key: telemetrygentype
                 default_value: unspecified_environment
+        spanevents:
+          dev.spanevent.count:
+            description: The number of span events from each environment.
+        metrics:
+          dev.metric.count:
+            description: The number of metrics from each environment.
         datapoints:
           dev.metrics.datapoint:
             description: The number of metric datapoints from each environment.
             attributes:
               - key: telemetrygentype
                 default_value: unspecified_environment
-        spans:
-          dev.span.count:
-            description: The number of spans from each environment.
+        logs:
+          dev.log.count:
+            description: The number of logs from each environment.
             attributes:
               - key: telemetrygentype
                 default_value: unspecified_environment

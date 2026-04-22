@@ -10,9 +10,9 @@ THANOS_QUERIER_HOST=$(oc get route thanos-querier -n openshift-monitoring -o jso
 metrics=("dev_log_count_total{telemetrygentype=\"logs\"}" \
          "dev_metrics_datapoint_total{telemetrygentype=\"metrics\"}" \
          "dev_span_count_total{telemetrygentype=\"traces\"}" \
-         "metric_count_total{telemetrygentype=\"metrics\"}")
+         "dev_metric_count_total")
 
-values=(1 1 10 1)
+values=(5 5 10 5)
 
 # Check metrics for OpenTelemetry collector instance.
 for i in "${!metrics[@]}"; do

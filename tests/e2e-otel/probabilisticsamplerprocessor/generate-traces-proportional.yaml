@@ -13,7 +13,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: telemetrygen
-        image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.129.0
+        image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.150.0
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
