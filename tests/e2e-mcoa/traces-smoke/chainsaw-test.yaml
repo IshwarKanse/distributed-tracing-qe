@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mcoa-traces-smoke
+spec:
+  # Single-cluster (hub self-managed). Avoid running in parallel because we touch
+  # the cluster-scoped MCOA addon resources and a shared MinIO/TempoStack.
+  concurrent: false
+  namespace: chainsaw-mcoa-traces-smoke
+  steps:
+    - name: install-minio-storage
+      try:
+        - apply:  { file: 00-install-storage.yaml }
+        - assert: { file: 00-assert.yaml }
+
+    - name: install-tempostack
+      try:
+        - apply:  { file: 01-install-tempostack.yaml }
+        - assert: { file: 01-assert.yaml }
+
+    - name: apply-mcoa-traces-stanza
+      description: |
+        Creates the OpenTelemetryCollector stanza + exporter secret in the MCOA
+        addon namespace. MCOA's ClusterManagementAddOn references these by name.
+      try:
+        - apply:  { file: 02-mcoa-traces-stanza.yaml }
+        - assert: { file: 02-assert.yaml }
+
+    - name: assert-mcoa-renders-otelcol
+      description: |
+        MCOA reconciles the ManagedClusterAddOn for local-cluster, produces a
+        ManifestWork carrying the rendered OpenTelemetryCollector, which OCM
+        applies to the spoke (== hub, self-managed). Validate the rendered CR.
+      try:
+        - assert: { file: 03-assert-rendered-otelcol.yaml }
+
+    - name: generate-traces
+      try:
+        - apply:  { file: 04-generate-traces.yaml }
+        - assert: { file: 04-assert.yaml }
+
+    - name: verify-traces-in-tempo
+      try:
+        - script:
+            timeout: 5m
+            content: ./check_traces.sh

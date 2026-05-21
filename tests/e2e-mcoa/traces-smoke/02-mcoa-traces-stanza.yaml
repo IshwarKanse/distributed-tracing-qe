@@ -1,0 +1,66 @@
+# MCOA "stanza" for the traces capability:
+#   - The OpenTelemetryCollector named "instance" in MCOA's addon namespace
+#     (open-cluster-management-observability), referenced by the
+#     ClusterManagementAddOn's installStrategy.placements[].configs.
+#   - An exporter Secret carrying the (TLS) material for the downstream OTLP
+#     exporter. Empty payload here — MCOA's OTel handler enumerates secret
+#     references but the smoke test does not exercise mTLS.
+#   - A ManagedClusterAddOn that activates MCOA on the local-cluster (the
+#     self-managed hub).
+#
+# MCOA's addon-manager picks the stanza up, renders it as
+# OpenTelemetryCollector "mcoa-instance" in namespace "mcoa-opentelemetry"
+# on the spoke (verified against MCOA v0.0.1 / chart tracing-1.0.0), and
+# delivers it via ManifestWork. The render also flips managementState from
+# "unmanaged" to "managed".
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: instance
+  namespace: open-cluster-management-observability
+spec:
+  managementState: unmanaged
+  mode: deployment
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc: {}
+          http: {}
+    processors: {}
+    exporters:
+      debug: {}
+      # Smoke export to the TempoStack distributor in the chainsaw namespace.
+      otlp/tempo:
+        endpoint: tempo-smoke-distributor.chainsaw-mcoa-traces-smoke.svc.cluster.local:4317
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: []
+          exporters: [otlp/tempo, debug]
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tracing-otlp-auth
+  namespace: open-cluster-management-observability
+type: Opaque
+stringData:
+  placeholder: smoke
+---
+# Activates the addon on the self-managed hub (local-cluster). With a
+# Placement-based installStrategy in MCOA's ClusterManagementAddOn, an explicit
+# ManagedClusterAddOn is normally created automatically when the placement
+# matches; applying it here makes the test idempotent and decouples it from
+# placement-controller timing.
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedClusterAddOn
+metadata:
+  name: multicluster-observability-addon
+  namespace: local-cluster
+spec:
+  installNamespace: open-cluster-management-observability

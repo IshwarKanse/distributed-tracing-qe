@@ -1,0 +1,10 @@
+---
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedClusterAddOn
+metadata:
+  name: multicluster-observability-addon
+  namespace: local-cluster
+status:
+  conditions:
+    - status: "True"
+      type: ManifestApplied

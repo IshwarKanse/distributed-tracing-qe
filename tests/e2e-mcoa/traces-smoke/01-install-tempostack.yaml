@@ -1,0 +1,24 @@
+---
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: smoke
+  namespace: chainsaw-mcoa-traces-smoke
+spec:
+  storage:
+    secret:
+      name: minio
+      type: s3
+  storageSize: 1Gi
+  resources:
+    total:
+      limits:
+        memory: 2Gi
+        cpu: 1000m
+  retention:
+    global:
+      traces: 1h
+  template:
+    queryFrontend:
+      jaegerQuery:
+        enabled: true

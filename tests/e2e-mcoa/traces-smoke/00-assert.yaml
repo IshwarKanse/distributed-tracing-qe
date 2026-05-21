@@ -1,0 +1,8 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: chainsaw-mcoa-traces-smoke
+status:
+  readyReplicas: 1

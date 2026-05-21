@@ -1,0 +1,10 @@
+---
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: smoke
+  namespace: chainsaw-mcoa-traces-smoke
+status:
+  conditions:
+    - status: "True"
+      type: Ready
