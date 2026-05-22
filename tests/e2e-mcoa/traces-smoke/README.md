@@ -28,8 +28,7 @@ chainsaw step                       resources touched
 
 Single-cluster ("hub self-managed"). The hub acts as both the OCM hub and the
 spoke `local-cluster`. MCOA's `ManifestWork` is reconciled on the same cluster,
-which keeps the test cheap and CRC-friendly (with caveats — see
-[SETUP-CRC.md](SETUP-CRC.md)).
+which keeps the test cheap to run.
 
 ```
 ┌─────────────────────────── single OCP cluster ──────────────────────────────┐
@@ -78,12 +77,11 @@ following must exist **before** running:
 
 ### Operators
 
-1. **OpenShift / OCP** with cluster-admin access (CRC works with caveats —
-   see [SETUP-CRC.md](SETUP-CRC.md)).
+1. **OpenShift** with cluster-admin access.
 2. **cert-manager Operator for Red Hat OpenShift** (`stable-v1`).
 3. **Red Hat build of OpenTelemetry** (`opentelemetry-product`, `stable`).
-4. **Tempo Operator** (community `alpha` channel works; RH build preferred
-   when available on the target).
+4. **Tempo Operator** (`tempo-product` `stable`; community `alpha` channel
+   also works).
 5. **OCM hub** (`ClusterManager` from
    `open-cluster-management-io/registration-operator`) with the `local-cluster`
    `ManagedCluster` registered, accepted, joined, and `Available=True`.
@@ -108,48 +106,79 @@ kustomize build deploy/ | oc apply --server-side --force-conflicts -f -
 
 These are NOT obvious from MCOA's own README and were discovered empirically:
 
-1. **`images-list` ConfigMap** in `open-cluster-management-observability` with
-   six image keys (`prometheus_config_reloader`, `kube_rbac_proxy`,
-   `obo_prometheus_rhel9_operator`, `kube_state_metrics`, `node_exporter`,
-   `prometheus`). MCOA reads it unconditionally even when only traces is
-   enabled — typically supplied by MCO classic; for standalone, see
-   [SETUP-CRC.md](SETUP-CRC.md) §3 for the exact ConfigMap.
+1. **`images-list` ConfigMap** in `open-cluster-management-observability`.
+   MCOA reads it unconditionally even when only traces is enabled (the
+   metrics handler runs regardless). In production this is supplied by MCO
+   classic; for standalone:
 
-2. **`HostedCluster` CRD** (`hypershift.openshift.io/v1beta1`) must exist on the
-   hub. MCOA's watcher controller waits for the cache to sync on this kind,
-   even on non-hypershift clusters. A minimal stub CRD is enough.
+   ```yaml
+   apiVersion: v1
+   kind: ConfigMap
+   metadata:
+     name: images-list
+     namespace: open-cluster-management-observability
+   data:
+     prometheus_config_reloader: quay.io/prometheus-operator/prometheus-config-reloader:v0.83.0
+     kube_rbac_proxy: quay.io/brancz/kube-rbac-proxy:v0.18.2
+     obo_prometheus_rhel9_operator: quay.io/rhobs/obo-prometheus-operator:v0.83.0-rhobs1
+     kube_state_metrics: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.15.0
+     node_exporter: quay.io/prometheus/node-exporter:v1.9.1
+     prometheus: quay.io/prometheus/prometheus:v3.5.0
+   ```
 
-3. **`ManagedCluster` vendor signal**. MCOA's traces capability is gated behind
-   `IsOpenShiftVendor()`. Either label the cluster:
+2. **`HostedCluster` CRD** (`hypershift.openshift.io/v1beta1`) must exist on
+   the hub. MCOA's watcher controller waits for the cache to sync on this
+   kind, even on non-hypershift clusters. A minimal stub CRD is enough.
+
+3. **`ManagedCluster` vendor signal**. MCOA's traces capability is gated
+   behind `IsOpenShiftVendor()`. Either label the cluster:
+
    ```bash
    oc label managedcluster local-cluster vendor=OpenShift --overwrite
    ```
-   or use the dedicated e2e hook annotation:
+
+   or use the dedicated e2e hook annotation MCOA exposes:
+
    ```bash
    oc annotate managedcluster local-cluster \
      mcoa-override-vendor=OpenShift --overwrite
    ```
-   The annotation exists explicitly for non-OCP / non-detectable cluster
-   environments (CRC, kind, etc.); see
-   `internal/addon/common/managedcluster.go` in MCOA upstream.
+
+   See `internal/addon/common/managedcluster.go` in MCOA upstream.
 
 4. **`Placement` `global` in namespace `open-cluster-management-global-set`**
    with a `ManagedClusterSetBinding` for the `global` ClusterSet. MCOA's
-   `ClusterManagementAddOn.spec.installStrategy.placements` references it.
-   See [SETUP-CRC.md](SETUP-CRC.md) §4 for the exact manifests.
+   `ClusterManagementAddOn.spec.installStrategy.placements` references it:
+
+   ```yaml
+   apiVersion: cluster.open-cluster-management.io/v1beta2
+   kind: ManagedClusterSetBinding
+   metadata: { name: global, namespace: open-cluster-management-global-set }
+   spec: { clusterSet: global }
+   ---
+   apiVersion: cluster.open-cluster-management.io/v1beta1
+   kind: Placement
+   metadata: { name: global, namespace: open-cluster-management-global-set }
+   spec:
+     clusterSets: [global]
+     predicates:
+       - requiredClusterSelector:
+           labelSelector: {}
+   ```
 
 5. **`AddOnDeploymentConfig` `multicluster-observability-addon`** in
    `open-cluster-management-observability` with at minimum:
+
    ```yaml
    spec:
      customizedVariables:
        - name: userWorkloadTracesCollection
          value: opentelemetrycollectors.v1beta1.opentelemetry.io
    ```
+
    The default config shipped in MCOA's `deploy/resources/` enables all
    capabilities — strip to traces-only to avoid metrics/logs noise.
 
-For a turn-key local setup (especially on CRC), use [SETUP-CRC.md](SETUP-CRC.md).
 The Prow preset that hosts this test in CI is expected to provide the above.
 
 ## Running locally
