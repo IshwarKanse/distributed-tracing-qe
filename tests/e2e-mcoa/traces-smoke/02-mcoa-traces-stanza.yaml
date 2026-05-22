@@ -28,20 +28,32 @@ spec:
         protocols:
           grpc: {}
           http: {}
-    processors: {}
+    processors:
+      # A non-empty processor is required because MCOA strips empty
+      # `processors: {}` blocks during render, and OTel Operator v0.144+
+      # rejects the resulting OpenTelemetryCollector with:
+      #   spec.config.service.pipelines.traces.processors: Required value
+      # batch is the minimal sensible choice for a smoke pipeline.
+      batch: {}
     exporters:
-      debug: {}
+      debug:
+        verbosity: detailed
       # Smoke export to the TempoStack distributor in the chainsaw namespace.
-      otlp/tempo:
+      # NOTE: OTel Collector v0.144 deprecated the bare `otlp` exporter alias in
+      # favour of `otlp_grpc`. The bare alias still works but logs a warning.
+      otlp_grpc/tempo:
         endpoint: tempo-smoke-distributor.chainsaw-mcoa-traces-smoke.svc.cluster.local:4317
         tls:
           insecure: true
     service:
+      telemetry:
+        logs:
+          level: debug
       pipelines:
         traces:
           receivers: [otlp]
-          processors: []
-          exporters: [otlp/tempo, debug]
+          processors: [batch]
+          exporters: [otlp_grpc/tempo, debug]
 ---
 apiVersion: v1
 kind: Secret

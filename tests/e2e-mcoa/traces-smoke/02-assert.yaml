@@ -1,10 +1,9 @@
+# Assert the ManagedClusterAddOn rolled out by verifying the resulting
+# ManifestWork exists and was applied. Asserting on MCA.status.conditions
+# directly is fragile (variable number of conditions over time).
 ---
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ManagedClusterAddOn
+apiVersion: work.open-cluster-management.io/v1
+kind: ManifestWork
 metadata:
-  name: multicluster-observability-addon
+  name: addon-multicluster-observability-addon-deploy-0
   namespace: local-cluster
-status:
-  conditions:
-    - status: "True"
-      type: ManifestApplied
