@@ -9,6 +9,7 @@ metadata:
   name: generate-traces
   namespace: chainsaw-mcoa-traces-smoke
 spec:
+  backoffLimit: 0
   template:
     spec:
       restartPolicy: Never

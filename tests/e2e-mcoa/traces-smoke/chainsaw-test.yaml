@@ -42,6 +42,5 @@ spec:
 
     - name: verify-traces-in-tempo
       try:
-        - script:
-            timeout: 5m
-            content: ./check_traces.sh
+        - apply:  { file: 05-verify-traces.yaml }
+        - assert: { file: 05-assert.yaml }

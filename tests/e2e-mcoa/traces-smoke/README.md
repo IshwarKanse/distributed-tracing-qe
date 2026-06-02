@@ -8,7 +8,7 @@ sent into it reach a central `TempoStack`.
 
 ## What this test does
 
-```
+```text
 chainsaw step                       resources touched
 ────────────────────────────────────────────────────────────────────────────────
 00 install-minio-storage            PVC, Deployment, Service, Secret (MinIO)
@@ -30,7 +30,7 @@ Single-cluster ("hub self-managed"). The hub acts as both the OCM hub and the
 spoke `local-cluster`. MCOA's `ManifestWork` is reconciled on the same cluster,
 which keeps the test cheap to run.
 
-```
+```text
 ┌─────────────────────────── single OCP cluster ──────────────────────────────┐
 │                                                                              │
 │   namespace: open-cluster-management-observability                           │
@@ -65,7 +65,7 @@ which keeps the test cheap to run.
 │   │  MinIO                              ← 00                              │   │
 │   │  TempoStack/smoke + components      ← 01                              │   │
 │   │  Job/generate-traces (telemetrygen) ← 04                              │   │
-│   │  Pod/check-traces (verification)    ← check_traces.sh                 │   │
+│   │  Job/verify-traces (verification)   ← 05                              │   │
 │   └──────────────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
