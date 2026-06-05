@@ -18,6 +18,16 @@ RUN mkdir -p /tmp/go/bin $GOCACHE \
 # Install dependencies required by test cases and debugging
 RUN apt-get update && apt-get install -y jq vim libreadline-dev unzip
 
+# Install Claude Code CLI via signed apt repository
+RUN install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \
+         -o /etc/apt/keyrings/claude-code.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
+         > /etc/apt/sources.list.d/claude-code.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends claude-code \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install chainsaw
 RUN curl -L -o chainsaw.tar.gz https://github.com/kyverno/chainsaw/releases/download/v0.2.13/chainsaw_linux_amd64.tar.gz \
     && tar -xvzf chainsaw.tar.gz \
