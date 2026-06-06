@@ -37,7 +37,7 @@ Read `${SHARED_DIR}/qe-agent/setup-context.json`. The test step writes it at exi
 
 Construct the raw GitHub URL and fetch the script:
 
-```
+```text
 https://raw.githubusercontent.com/openshift/release/main/ci-operator/step-registry/<step_script_ref>
 ```
 
@@ -85,6 +85,8 @@ The JUnit test case name usually matches the folder name under the test director
 - `assert.yaml` / `error.yaml` — explicit assertion files
 
 To find the right folder when the name mapping is unclear, use `find <repo-root>/tests -type d -name "<test-name>"`.
+
+Once located, record this as `TEST_DIR` (e.g. `tests/e2e/targetallocator`). The rerun commands in Step 3 reference `${TEST_DIR}` directly.
 
 For **Cypress** suites (Tracing UI):
 
@@ -142,17 +144,19 @@ Read `chainsaw-test.yaml` for the failing test before cleanup — it tells you w
 
 ### OpenTelemetry Operator
 ```bash
+# Use TEST_DIR resolved in Step 2 (e.g. tests/e2e/targetallocator)
 # Read the fetched step script (from Step 0) to check whether --selector is used in the chainsaw invocation
 # If the script passes --selector <value>, include the same flag in the rerun
 CHAINSAW_CMD="chainsaw test --skip-delete --quiet --report-name junit_rerun_otel --report-path ${ARTIFACT_DIR} --report-format XML"
 # Add selector if the original script used one (OTEL only — check the step script)
 # CHAINSAW_CMD+=" --selector <selector-from-script>"
-CHAINSAW_CMD+=" --test-dir tests/e2e/<failing-test-folder>"
+CHAINSAW_CMD+=" --test-dir ${TEST_DIR}"
 eval "$CHAINSAW_CMD"
 ```
 
 ### Tempo Operator
 ```bash
+# Use TEST_DIR resolved in Step 2 (e.g. tests/e2e-openshift/tls-profile)
 # Tempo always uses --config .chainsaw-openshift.yaml (visible in the fetched step script)
 chainsaw test \
   --skip-delete \
@@ -161,7 +165,7 @@ chainsaw test \
   --report-name "junit_rerun_tempo" \
   --report-path "${ARTIFACT_DIR}" \
   --report-format XML \
-  --test-dir tests/e2e/<failing-test-folder>
+  --test-dir "${TEST_DIR}"
 ```
 
 ### Tracing UI (Cypress)
@@ -198,7 +202,7 @@ for i in 2 3 4; do
     --report-name "junit_rerun_otel_run${i}" \
     --report-path "${ARTIFACT_DIR}" \
     --report-format XML \
-    --test-dir tests/e2e/<failing-test-folder>
+    --test-dir "${TEST_DIR}"
 done
 ```
 
@@ -364,17 +368,17 @@ Do not attempt to fix the operator code. Instead, write `${ARTIFACT_DIR}/bug-rep
 
 ## Evidence
 ### Operator logs
-```
+```text
 <relevant log lines>
 ```
 
 ### Cluster events
-```
+```text
 <relevant events>
 ```
 
 ### JUnit failure message
-```
+```text
 <failure text from XML>
 ```
 
