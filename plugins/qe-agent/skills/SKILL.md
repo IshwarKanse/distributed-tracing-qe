@@ -87,6 +87,24 @@ Group failures by suite so you process each operator's failures together.
 
 If `${SHARED_DIR}/qe-agent/` does not exist or contains no XML files, exit with a clear message — the test steps did not run or produced no results.
 
+### High-failure triage: more than 5 failures in a suite
+
+When a single suite has more than 5 failing test cases, it is very likely that all failures share a single root cause (operator crash, missing CRD, network partition, install failure) rather than being independent bugs. Debugging all of them individually wastes time and produces redundant output.
+
+**What to do:**
+
+1. **Look for a common pattern** across the failure messages. Common indicators:
+   - All messages contain the same error string (e.g., `connection refused`, `resource not ready`, `no such host`, `image pull failed`, `CRD not found`)
+   - All tests fail at the same chainsaw step name (e.g., `step-01-apply`, `assert`)
+   - All failures reference the same namespace, resource kind, or operator condition
+   - Failure times are clustered tightly (within seconds of each other) — indicating the cluster state changed once and all tests hit it
+
+2. **If a clear pattern exists**: pick the **simplest failing test** (fewest steps in `chainsaw-test.yaml`, or shortest failure message) as the representative case. Record the pattern and the chosen representative in the analysis summary. Proceed with Steps 2–5 for that one test only, skipping the rest.
+
+3. **If no clear pattern**: the failures are likely independent. Fall back to processing each failure individually (standard flow) but cap at 3 tests to stay within time budget — note in the summary that only the first 3 were investigated.
+
+Write the pattern conclusion near the top of `${ARTIFACT_DIR}/qe-agent-analysis.md` so it is visible immediately.
+
 ---
 
 ## Step 2 — Locate Test Source Files
