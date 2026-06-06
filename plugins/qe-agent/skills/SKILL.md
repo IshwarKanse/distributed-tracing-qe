@@ -87,9 +87,9 @@ Group failures by suite so you process each operator's failures together.
 
 If `${SHARED_DIR}/qe-agent/` does not exist or contains no XML files, exit with a clear message — the test steps did not run or produced no results.
 
-### High-failure triage: more than 5 failures in a suite
+### High-failure triage: more than 5 failures total
 
-When a single suite has more than 5 failing test cases, it is very likely that all failures share a single root cause (operator crash, missing CRD, network partition, install failure) rather than being independent bugs. Debugging all of them individually wastes time and produces redundant output.
+When the total number of failing test cases across all suites is more than 5, it is very likely that all failures share a single root cause (operator crash, missing CRD, network partition, install failure) rather than being independent bugs. Debugging all of them individually wastes time and produces redundant output.
 
 **What to do:**
 
