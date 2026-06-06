@@ -13,9 +13,10 @@ Three test suites are supported. The JUnit report name prefix tells you which su
 
 | JUnit prefix | Suite | Framework | Repo |
 |---|---|---|---|
-| `junit_otel_*` | OpenTelemetry Operator | chainsaw | `https://github.com/IshwarKanse/opentelemetry-operator` |
+| `junit_otel_*` | OpenTelemetry Operator | chainsaw | `https://github.com/openshift/opentelemetry-operator` |
 | `junit_tempo_*` | Tempo Operator | chainsaw | `https://github.com/grafana/tempo-operator` |
 | `junit_distributed-tracing-console-plugin*` | Tracing UI (Cypress) | Cypress/npm | `https://github.com/openshift/distributed-tracing-console-plugin` |
+| `junit_distributed_tracing_disconnected` | Disconnected (distributed-tracing-qe) | chainsaw | `https://github.com/openshift/distributed-tracing-qe` |
 
 ---
 
@@ -50,14 +51,27 @@ Read the script carefully. It is divided into two logical sections:
 Export any env vars from the `env` field, then **run the setup section of the fetched script** — the commands up to (but not including) the first `chainsaw test` or `npx cypress run` invocation.
 
 Key adaptations when running setup commands from the script:
-- `cp -R /tmp/opentelemetry-operator /tmp/opentelemetry-tests` — the source image mount `/tmp/opentelemetry-operator` does not exist in the qe-agent pod. Replace with a `git clone` of the upstream repo at the same commit. Use `git log` from the running cluster's operator deployment to identify the version if the commit is unknown.
-- `kubectl create -f <url>` for CRDs — change to `kubectl apply -f <url>` since `create` fails if the CRD already exists from the original test run; `apply` is idempotent.
-- CSV patches (`oc patch csv ...`) — the operator is already installed and already patched from the original test step. Skip these unless the test you are rerunnig specifically requires a freshly patched CSV. Check `oc get csv -n <namespace>` to verify env vars are already set.
-- `unset NAMESPACE` — always run this before chainsaw to avoid conflicts.
+
+- **Image-mount `cp -R` → `git clone`**: Several step scripts copy test repos from image mounts that don't exist in the qe-agent pod. Replace each with a `git clone`:
+  - `cp -R /tmp/opentelemetry-operator /tmp/opentelemetry-tests` → `git clone https://github.com/openshift/opentelemetry-operator.git /tmp/opentelemetry-tests`
+  - `cp -R /tmp/distributed-tracing-qe /tmp/distributed-tracing-tests` → `git clone https://github.com/openshift/distributed-tracing-qe.git /tmp/distributed-tracing-tests`
+  - For any other `cp -R /tmp/<name>` pattern, check `oc get csv -o yaml | grep github.com` or the CSV annotations to identify the source repo and clone from there.
+
+- **`kubectl create -f <url>` for CRDs** — change to `kubectl apply -f <url>` since `create` fails if the CRD already exists from the original test run; `apply` is idempotent.
+
+- **CSV patches (`oc patch csv ...`)** — the operator is already installed and already patched from the original test step. Skip these unless the test you are rerunning specifically requires a freshly patched CSV. Check `oc get csv -n <namespace>` to verify env vars are already set.
+
+- **`unset NAMESPACE`** — always run this before chainsaw to avoid conflicts.
+
+- **`SKIP_TESTS` processing** — the setup sections of several scripts contain a block that reads `$SKIP_TESTS` and removes test directories. Skip this block entirely: `$SKIP_TESTS` is not set in the qe-agent pod, and for reruns you want all test directories present so you can target the specific failing one.
+
+- **GOPATH / `make build` (Tempo stage and downstream only)** — the Tempo stage and downstream scripts export `GOPATH=/tmp/go`, `GOBIN=/tmp/go/bin`, `GOCACHE=/tmp/.cache/go-build` and run `make build` to compile test helpers. Run these as part of setup. Because each bash invocation starts a fresh shell, you must re-export `GOPATH`, `GOBIN`, and `GOCACHE` at the start of any bash call in Steps 3–6 that runs chainsaw for Tempo stage or downstream tests.
+
+- **IDP / htpasswd setup (Tracing UI only)** — the Tracing UI setup creates an htpasswd secret and patches the cluster oauth. Check if the secret already exists (`oc get secret htpass-secret -n openshift-config`) before running `oc create secret` — skip creation if it does. Similarly, only patch oauth if the htpasswd IDP is not already configured.
 
 After setup, `cd` into the repo directory and proceed with Steps 1–6.
 
-If `setup-context.json` does not exist, infer the suite from the JUnit file name prefix (`junit_otel_*` → OpenTelemetry, `junit_tempo_*` → Tempo, `junit_distributed-tracing-console-plugin*` → Tracing UI) and skip the rerun — proceed directly to diagnosis from the JUnit content and cluster state.
+If `setup-context.json` does not exist, infer the suite from the JUnit file name prefix (`junit_otel_*` → OpenTelemetry, `junit_tempo_*` → Tempo, `junit_distributed-tracing-console-plugin*` → Tracing UI, `junit_distributed_tracing_disconnected` → Disconnected) and skip the rerun — proceed directly to diagnosis from the JUnit content and cluster state.
 
 ## Step 1 — Parse JUnit XMLs and Identify Failures
 
@@ -72,6 +86,24 @@ For each XML file, extract:
 Group failures by suite so you process each operator's failures together.
 
 If `${SHARED_DIR}/qe-agent/` does not exist or contains no XML files, exit with a clear message — the test steps did not run or produced no results.
+
+### High-failure triage: more than 5 failures total
+
+When the total number of failing test cases across all suites is more than 5, it is very likely that all failures share a single root cause (operator crash, missing CRD, network partition, install failure) rather than being independent bugs. Debugging all of them individually wastes time and produces redundant output.
+
+**What to do:**
+
+1. **Look for a common pattern** across the failure messages. Common indicators:
+   - All messages contain the same error string (e.g., `connection refused`, `resource not ready`, `no such host`, `image pull failed`, `CRD not found`)
+   - All tests fail at the same chainsaw step name (e.g., `step-01-apply`, `assert`)
+   - All failures reference the same namespace, resource kind, or operator condition
+   - Failure times are clustered tightly (within seconds of each other) — indicating the cluster state changed once and all tests hit it
+
+2. **If a clear pattern exists**: pick the **simplest failing test** (fewest steps in `chainsaw-test.yaml`, or shortest failure message) as the representative case. Record the pattern and the chosen representative in the analysis summary. Proceed with Steps 2–5 for that one test only, skipping the rest.
+
+3. **If no clear pattern**: the failures are likely independent. Fall back to processing each failure individually (standard flow) but cap at 3 tests to stay within time budget — note in the summary that only the first 3 were investigated.
+
+Write the pattern conclusion near the top of `${ARTIFACT_DIR}/qe-agent-analysis.md` so it is visible immediately.
 
 ---
 
@@ -187,19 +219,38 @@ After the rerun, read the fresh JUnit XML (saved to `$ARTIFACT_DIR`) to check wh
 
 If the test passes on the first rerun, run it 3 more times sequentially. Clean up test resources before each run (see above). Use a unique `--report-name` per run so the XMLs don't overwrite each other:
 
+**OpenTelemetry Operator:**
 ```bash
 for i in 2 3 4; do
-  # Delete the chainsaw test namespace to cascade all resources (including operator-managed ones)
   kubectl delete namespace chainsaw-<test-name> --ignore-not-found=true
   kubectl wait --for=delete namespace/chainsaw-<test-name> --timeout=5m 2>/dev/null || true
-
-  # Delete any cluster-scoped resources the test created
   kubectl delete clusterrole,clusterrolebinding -l app.kubernetes.io/managed-by=chainsaw --ignore-not-found=true
 
   chainsaw test \
     --skip-delete \
     --quiet \
     --report-name "junit_rerun_otel_run${i}" \
+    --report-path "${ARTIFACT_DIR}" \
+    --report-format XML \
+    --test-dir "${TEST_DIR}"
+done
+```
+
+**Tempo Operator** (always include `--config .chainsaw-openshift.yaml`; re-export GOPATH if this is a stage or downstream test):
+```bash
+for i in 2 3 4; do
+  kubectl delete namespace chainsaw-<test-name> --ignore-not-found=true
+  kubectl wait --for=delete namespace/chainsaw-<test-name> --timeout=5m 2>/dev/null || true
+  kubectl delete clusterrole,clusterrolebinding -l app.kubernetes.io/managed-by=chainsaw --ignore-not-found=true
+
+  # Re-export GOPATH for Tempo stage/downstream so test helpers on /tmp/go/bin are accessible
+  export GOPATH=/tmp/go GOBIN=/tmp/go/bin GOCACHE=/tmp/.cache/go-build
+
+  chainsaw test \
+    --skip-delete \
+    --config .chainsaw-openshift.yaml \
+    --quiet \
+    --report-name "junit_rerun_tempo_run${i}" \
     --report-path "${ARTIFACT_DIR}" \
     --report-format XML \
     --test-dir "${TEST_DIR}"
