@@ -1,6 +1,6 @@
 ---
 name: qe-agent
-description: Use this skill to analyze failing CI tests for Red Hat OpenShift Distributed Tracing (OpenTelemetry Operator, Tempo Operator, Tracing UI console plugin), rerun the specific failing tests, diagnose whether the failure is a product bug or a test that needs fixing, apply fixes to test source files when needed, and export results to the artifact directory. Trigger whenever failing JUnit XML results are present in $SHARED_DIR/qe-agent/ or when an engineer asks to debug, rerun, or fix failing distributed tracing QE tests.
+description: Use this skill to analyze failing CI tests for Red Hat OpenShift Distributed Tracing (OpenTelemetry Operator, Tempo Operator, Tracing UI console plugin), rerun the specific failing tests, diagnose whether the failure is a product bug or a test that needs fixing, apply fixes to test source files when needed, and export results to the artifact directory. Trigger whenever $SHARED_DIR/qe-agent-context.json is present with has_test_failures=true or when an engineer asks to debug, rerun, or fix failing distributed tracing QE tests.
 ---
 
 # RHOSDT QE Agent — Test Failure Triage and Fix
@@ -22,11 +22,12 @@ Three test suites are supported. The JUnit report name prefix tells you which su
 
 ## Step 0 — Read Setup Context and Fetch the Step Script
 
-Read `${SHARED_DIR}/qe-agent/setup-context.json`. The test step writes it at exit time with two fields:
+Read `${SHARED_DIR}/qe-agent-context.json`. The test step writes it at exit time:
 
 ```json
 {
   "step_script_ref": "distributed-tracing/tests/opentelemetry/downstream/distributed-tracing-tests-opentelemetry-downstream-commands.sh",
+  "has_test_failures": true,
   "env": {
     "MULTISTAGE_PARAM_OVERRIDE_OTEL_TESTS_BRANCH": "rhosdt-3.9"
   }
@@ -71,11 +72,41 @@ Key adaptations when running setup commands from the script:
 
 After setup, `cd` into the repo directory and proceed with Steps 1–6.
 
-If `setup-context.json` does not exist, infer the suite from the JUnit file name prefix (`junit_otel_*` → OpenTelemetry, `junit_tempo_*` → Tempo, `junit_distributed-tracing-console-plugin*` → Tracing UI, `junit_distributed_tracing_disconnected` → Disconnected) and skip the rerun — proceed directly to diagnosis from the JUnit content and cluster state.
+If `qe-agent-context.json` does not exist, infer the suite from the JUnit file name prefix (`junit_otel_*` → OpenTelemetry, `junit_tempo_*` → Tempo, `junit_distributed-tracing-console-plugin*` → Tracing UI, `junit_distributed_tracing_disconnected` → Disconnected) and skip the rerun — proceed directly to diagnosis from the JUnit content and cluster state.
+
+## Step 0a — Verify Cluster Stability
+
+Before running any prerequisites setup or test reruns, confirm the cluster is stable. The original CI test step may have applied resources that triggered MachineConfig updates — running tests while nodes are updating causes spurious failures.
+
+```bash
+oc get machineconfigpools.machineconfiguration.openshift.io
+```
+
+For each MachineConfigPool, all of the following must be true before proceeding:
+- `UPDATED` = `True`
+- `UPDATING` = `False`
+- `DEGRADED` = `False`
+- `READYMACHINECOUNT` = `MACHINECOUNT` (all machines ready)
+
+**If any pool is not ready**, wait and recheck every 60 seconds:
+
+```bash
+# Wait until all MCPs are updated, not updating, and not degraded
+until oc get machineconfigpools.machineconfiguration.openshift.io \
+    -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Updated")].status}{" "}{.status.conditions[?(@.type=="Updating")].status}{" "}{.status.conditions[?(@.type=="Degraded")].status}{"\n"}{end}' \
+    | grep -qvE '^True False False'; do
+  echo "MCPs not ready yet, waiting 60s..."
+  sleep 60
+  oc get machineconfigpools.machineconfiguration.openshift.io
+done
+echo "All MCPs ready — proceeding."
+```
+
+Timeout after 20 minutes. If MCPs are still not ready at that point, record the degraded pool status in `${ARTIFACT_DIR}/qe-agent-analysis.md` and abort — the cluster is unhealthy and test results would be unreliable.
 
 ## Step 1 — Parse JUnit XMLs and Identify Failures
 
-Read all `*.xml` files from `${SHARED_DIR}/qe-agent/` (recurse into sub-directories — test steps may nest results).
+Read all JUnit XML files from `${SHARED_DIR}/qe-agent-junit-*.xml` (flat files copied by the test step trap function).
 
 For each XML file, extract:
 - **Suite name** (`name` attribute on `<testsuite>`)
@@ -85,7 +116,7 @@ For each XML file, extract:
 
 Group failures by suite so you process each operator's failures together.
 
-If `${SHARED_DIR}/qe-agent/` does not exist or contains no XML files, exit with a clear message — the test steps did not run or produced no results.
+If no `${SHARED_DIR}/qe-agent-junit-*.xml` files are found, exit with a clear message — the test steps did not run or produced no results.
 
 ### High-failure triage: more than 5 failures total
 
