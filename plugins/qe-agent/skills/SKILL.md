@@ -349,7 +349,10 @@ oc get subscription -n openshift-tempo-operator -o jsonpath='{range .items[*]}{.
 
 ```bash
 # Operator pod status and logs (namespace depends on install mode)
-COO_NS=$(oc get pods --all-namespaces -l app.kubernetes.io/name=observability-operator -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || echo "openshift-cluster-observability-operator")
+COO_NS="$(oc get pods --all-namespaces -l app.kubernetes.io/name=observability-operator -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null)"
+if [ -z "${COO_NS}" ]; then
+  COO_NS="openshift-cluster-observability-operator"
+fi
 oc get pods -n "${COO_NS}"
 oc logs -n "${COO_NS}" deploy/observability-operator --tail=150 2>/dev/null || \
   oc logs -n "${COO_NS}" $(oc get pods -n "${COO_NS}" -l app.kubernetes.io/name=observability-operator -o name | head -1) --tail=150 2>/dev/null || true

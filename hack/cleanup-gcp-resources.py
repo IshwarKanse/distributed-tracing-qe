@@ -27,6 +27,8 @@ Environment (for CI / non-interactive use):
   GCP_PROJECT                     Project ID (overrides --project when set).
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -53,7 +55,11 @@ log = logging.getLogger(__name__)
 def _run(cmd: list[str]) -> tuple[str, int]:
     """Run *cmd* and return (stdout, returncode). Never raises."""
     log.debug("+ %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        log.error("Command not found: %s — is gcloud installed and on PATH?", cmd[0])
+        return "", 127
     if result.returncode != 0:
         log.debug("stderr: %s", result.stderr.strip())
     return result.stdout.strip(), result.returncode
@@ -72,8 +78,8 @@ def gcloud_list(*args, project: str) -> list[dict]:
         return []
 
 
-def tail(url: str) -> str:
-    """Return the last path component of a GCP resource URL or zone string."""
+def url_last_segment(url: str) -> str:
+    """Return the last path component of a GCP resource URL (e.g. zone, region)."""
     return url.split("/")[-1] if url else ""
 
 
@@ -90,11 +96,12 @@ def parse_timestamp(value: str | None) -> datetime | None:
 def is_older_than(timestamp_str: str | None, hours: int) -> bool:
     """
     Return True when the resource is older than *hours*.
-    Resources with unparseable timestamps are treated as old (safe to delete).
+    Resources with unparseable timestamps are skipped (treated as new).
     """
     ts = parse_timestamp(timestamp_str)
     if ts is None:
-        return True
+        log.warning("Unable to parse timestamp %r; treating as new (skipped)", timestamp_str)
+        return False
     return datetime.now(timezone.utc) - ts > timedelta(hours=hours)
 
 
@@ -163,13 +170,31 @@ class GCPCleaner:
                 )
 
     def clean_backend_services(self) -> None:
+        # Global backend services (most CI-created LBs use global)
         log.info("=== BackendService (global) ===")
         for item in gcloud_list("compute", "backend-services", "list", "--global", project=self.project):
             name = item.get("name", "")
             if self._eligible(name, item.get("creationTimestamp")):
                 self._delete(
-                    f"BackendService/{name}",
+                    f"BackendService/global/{name}",
                     ["gcloud", "compute", "backend-services", "delete", name, "--global"],
+                )
+
+        # Regional backend services (internal LBs land here)
+        log.info("=== BackendService (regional) ===")
+        for item in gcloud_list("compute", "backend-services", "list", project=self.project):
+            # gcloud returns both global and regional without --global; skip any already handled globally
+            if item.get("region") is None:
+                continue
+            name = item.get("name", "")
+            region = url_last_segment(item.get("region", ""))
+            if not region:
+                log.warning("BackendService %s has no region, skipping", name)
+                continue
+            if self._eligible(name, item.get("creationTimestamp")):
+                self._delete(
+                    f"BackendService/{region}/{name}",
+                    ["gcloud", "compute", "backend-services", "delete", name, "--region", region],
                 )
 
     def clean_health_checks(self) -> None:
@@ -188,25 +213,33 @@ class GCPCleaner:
             name = zone.get("name", "")
             if not self._eligible(name, zone.get("creationTime")):
                 continue
-            # Record sets must be removed before the zone can be deleted.
-            self._delete_dns_records(name)
-            self._delete(
-                f"ManagedZone/{name}",
-                ["gcloud", "dns", "managed-zones", "delete", name],
-            )
+            # Record sets must be fully removed before the zone can be deleted.
+            # Only proceed with zone deletion when all records were cleaned up.
+            records_ok = self._delete_dns_records(name)
+            if records_ok:
+                self._delete(
+                    f"ManagedZone/{name}",
+                    ["gcloud", "dns", "managed-zones", "delete", name],
+                )
+            else:
+                log.warning("Skipping zone deletion for %s — some record sets could not be removed", name)
 
-    def _delete_dns_records(self, zone: str) -> None:
-        """Delete all non-NS/SOA records from *zone*."""
+    def _delete_dns_records(self, zone: str) -> bool:
+        """Delete all non-NS/SOA records from *zone*. Returns True when all succeeded."""
         records = gcloud_list("dns", "record-sets", "list", "--zone", zone, project=self.project)
+        all_ok = True
         for record in records:
             rtype = record.get("type", "")
             if rtype in ("NS", "SOA"):
                 continue
             rname = record.get("name", "")
-            self._delete(
+            ok = self._delete(
                 f"DNSRecord/{zone}/{rtype}/{rname}",
                 ["gcloud", "dns", "record-sets", "delete", rname, "--zone", zone, "--type", rtype],
             )
+            if not ok:
+                all_ok = False
+        return all_ok
 
     def clean_storage_buckets(self) -> None:
         log.info("=== Storage Bucket ===")
@@ -217,13 +250,14 @@ class GCPCleaner:
             ts = item.get("timeCreated") or item.get("createTime")
             if not self._eligible(name, ts):
                 continue
+            # gcloud storage rm does not accept --project or --quiet flags;
+            # call _run() directly rather than routing through _delete().
             label = f"Bucket/{name}"
             if self.dry_run:
                 log.info("[DRY-RUN] Would delete %s", label)
                 self.deleted += 1
             else:
                 log.info("Deleting %s", label)
-                # gcloud storage rm --recursive removes bucket contents and the bucket itself.
                 _, rc = _run(["gcloud", "storage", "rm", "--recursive", f"gs://{name}"])
                 if rc != 0:
                     log.error("FAILED to delete %s", label)
@@ -245,7 +279,10 @@ class GCPCleaner:
         log.info("=== InstanceGroup (managed) ===")
         for item in gcloud_list("compute", "instance-groups", "managed", "list", project=self.project):
             name = item.get("name", "")
-            zone = tail(item.get("zone", ""))
+            zone = url_last_segment(item.get("zone", ""))
+            if not zone:
+                log.warning("ManagedInstanceGroup %s has no zone, skipping", name)
+                continue
             if self._eligible(name, item.get("creationTimestamp")):
                 self._delete(
                     f"ManagedInstanceGroup/{zone}/{name}",
@@ -255,7 +292,10 @@ class GCPCleaner:
         log.info("=== InstanceGroup (unmanaged) ===")
         for item in gcloud_list("compute", "instance-groups", "unmanaged", "list", project=self.project):
             name = item.get("name", "")
-            zone = tail(item.get("zone", ""))
+            zone = url_last_segment(item.get("zone", ""))
+            if not zone:
+                log.warning("UnmanagedInstanceGroup %s has no zone, skipping", name)
+                continue
             if self._eligible(name, item.get("creationTimestamp")):
                 self._delete(
                     f"UnmanagedInstanceGroup/{zone}/{name}",
@@ -266,7 +306,10 @@ class GCPCleaner:
         log.info("=== Subnetwork ===")
         for item in gcloud_list("compute", "networks", "subnets", "list", project=self.project):
             name = item.get("name", "")
-            region = tail(item.get("region", ""))
+            region = url_last_segment(item.get("region", ""))
+            if not region:
+                log.warning("Subnetwork %s has no region, skipping", name)
+                continue
             if self._eligible(name, item.get("creationTimestamp")):
                 self._delete(
                     f"Subnetwork/{region}/{name}",
