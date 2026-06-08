@@ -281,18 +281,109 @@ If the failure is reproducible even 1 out of 4 runs, classify as `FLAKY` and pro
 
 ## Step 4 — Diagnose: Product Bug vs Test Issue
 
-Read the failure message, rerun output, and test source files together. Gather additional cluster evidence using `oc`:
+Read the failure message, rerun output, and test source files together. Then run the full operator diagnostics below before making any classification decision — the logs and resource status are the primary evidence.
+
+### Operator Diagnostics
+
+Run all of the following. Capture output that is relevant to the failure (errors, warnings, crash reasons, unexpected conditions) and include it in the bug report or analysis summary.
+
+#### OpenTelemetry Operator
 
 ```bash
-# Pod logs from the operator namespace
-oc logs -n openshift-opentelemetry-operator deploy/opentelemetry-operator-controller-manager --tail=100
-oc logs -n openshift-tempo-operator deploy/tempo-operator-controller-manager --tail=100
+# Operator pod status and logs
+oc get pods -n openshift-opentelemetry-operator
+oc logs -n openshift-opentelemetry-operator deploy/opentelemetry-operator-controller-manager --tail=150
+oc logs -n openshift-opentelemetry-operator deploy/opentelemetry-operator-controller-manager --previous --tail=50 2>/dev/null || true
 
-# Recent events in the test namespace
+# OpenTelemetryCollector instances across all namespaces
+oc get opentelemetrycollectors --all-namespaces -o wide
+oc get opentelemetrycollectors --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}: {.status.conditions[*].type}={.status.conditions[*].status} {.status.conditions[*].message}{"\n"}{end}'
+
+# Instrumentation, OpAMPBridge, TargetAllocator CRs
+oc get instrumentations --all-namespaces -o wide 2>/dev/null || true
+oc get opampbridges --all-namespaces -o wide 2>/dev/null || true
+
+# Collector and sidecar pods in the test namespace
+oc get pods -n <test-namespace> -o wide
+oc describe pods -n <test-namespace> | grep -A10 -E 'Events:|Reason:|State:|Exit Code:'
+
+# Events in operator namespace and test namespace
+oc get events -n openshift-opentelemetry-operator --sort-by='.lastTimestamp' | tail -20
 oc get events -n <test-namespace> --sort-by='.lastTimestamp' | tail -30
 
-# Check if expected CRDs/resources exist
-oc get crd | grep -E 'opentelemetry|tempo|jaeger'
+# CSV and subscription status
+oc get csv -n openshift-opentelemetry-operator -o jsonpath='{range .items[*]}{.metadata.name}: {.status.phase} — {.status.message}{"\n"}{end}'
+oc get subscription -n openshift-opentelemetry-operator -o jsonpath='{range .items[*]}{.metadata.name}: {.status.currentCSV} state={.status.state}{"\n"}{end}' 2>/dev/null || true
+```
+
+#### Tempo Operator
+
+```bash
+# Operator pod status and logs
+oc get pods -n openshift-tempo-operator
+oc logs -n openshift-tempo-operator deploy/tempo-operator-controller --tail=150
+oc logs -n openshift-tempo-operator deploy/tempo-operator-controller --previous --tail=50 2>/dev/null || true
+
+# TempoStack and TempoMonolithic instances across all namespaces
+oc get tempostacks --all-namespaces -o wide 2>/dev/null || true
+oc get tempostacks --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}: {.status.conditions[*].type}={.status.conditions[*].status} {.status.conditions[*].message}{"\n"}{end}' 2>/dev/null || true
+oc get tempomonolithics --all-namespaces -o wide 2>/dev/null || true
+
+# Operand pods in the test namespace (query gateway, distributor, ingester, compactor, querier)
+oc get pods -n <test-namespace> -o wide
+oc describe pods -n <test-namespace> | grep -A10 -E 'Events:|Reason:|State:|Exit Code:|OOMKilled'
+
+# Events in operator namespace and test namespace
+oc get events -n openshift-tempo-operator --sort-by='.lastTimestamp' | tail -20
+oc get events -n <test-namespace> --sort-by='.lastTimestamp' | tail -30
+
+# Storage secret and object store config (common Tempo failure cause)
+oc get secret -n <test-namespace> | grep -E 'minio|s3|gcs|azure|storage'
+
+# CSV and subscription status
+oc get csv -n openshift-tempo-operator -o jsonpath='{range .items[*]}{.metadata.name}: {.status.phase} — {.status.message}{"\n"}{end}'
+oc get subscription -n openshift-tempo-operator -o jsonpath='{range .items[*]}{.metadata.name}: {.status.currentCSV} state={.status.state}{"\n"}{end}' 2>/dev/null || true
+```
+
+#### Cluster Observability Operator (COO)
+
+```bash
+# Operator pod status and logs (namespace depends on install mode)
+COO_NS="$(oc get pods --all-namespaces -l app.kubernetes.io/name=observability-operator -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null)"
+if [ -z "${COO_NS}" ]; then
+  COO_NS="openshift-cluster-observability-operator"
+fi
+oc get pods -n "${COO_NS}"
+oc logs -n "${COO_NS}" deploy/observability-operator --tail=150 2>/dev/null || \
+  oc logs -n "${COO_NS}" $(oc get pods -n "${COO_NS}" -l app.kubernetes.io/name=observability-operator -o name | head -1) --tail=150 2>/dev/null || true
+oc logs -n "${COO_NS}" deploy/observability-operator --previous --tail=50 2>/dev/null || true
+
+# UIPlugin CRs (controls Tracing UI console plugin registration)
+oc get uiplugins --all-namespaces -o wide 2>/dev/null || true
+oc get uiplugins --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}: {.status.conditions[*].type}={.status.conditions[*].status} {.status.conditions[*].message}{"\n"}{end}' 2>/dev/null || true
+
+# MonitoringStack CRs
+oc get monitoringstacks --all-namespaces -o wide 2>/dev/null || true
+
+# Console plugin registration status (Tracing UI)
+oc get consoleplugin distributed-tracing-plugin -o jsonpath='{.status}{"\n"}' 2>/dev/null || true
+oc get consoles.operator.openshift.io cluster -o jsonpath='{.spec.plugins}{"\n"}' 2>/dev/null || true
+
+# Events in COO namespace
+oc get events -n "${COO_NS}" --sort-by='.lastTimestamp' | tail -20
+
+# CSV and subscription status
+oc get csv -n "${COO_NS}" -o jsonpath='{range .items[*]}{.metadata.name}: {.status.phase} — {.status.message}{"\n"}{end}'
+```
+
+#### CRD and API availability check
+
+```bash
+# Verify all expected CRDs are present — missing CRDs cause many test failures
+oc get crd | grep -E 'opentelemetry|tempo|observability|uiplugin|monitoringstack'
+
+# Check operator API groups are registered
+oc api-resources | grep -E 'opentelemetry|tempo|observability'
 ```
 
 ### Product Bug indicators
