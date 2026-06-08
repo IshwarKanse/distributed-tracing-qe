@@ -138,12 +138,14 @@ class GCPCleaner:
 
     # -- deletion ------------------------------------------------------------
 
-    def _delete(self, label: str, cmd: list[str]) -> bool:
+    def _delete(self, label: str, cmd: list[str], include_project: bool = True) -> bool:
         """
         Execute *cmd* (or simulate it when dry_run is set).
         *cmd* must NOT include --quiet or --project; those are appended here.
+        Pass include_project=False for commands (e.g. gcloud storage rm) that
+        do not accept the --project flag.
         """
-        full_cmd = cmd + ["--quiet", "--project", self.project]
+        full_cmd = [*cmd, "--quiet", *( ["--project", self.project] if include_project else [])]
         if self.dry_run:
             log.info("[DRY-RUN] Would delete %s", label)
             self.deleted += 1
@@ -250,20 +252,12 @@ class GCPCleaner:
             ts = item.get("timeCreated") or item.get("createTime")
             if not self._eligible(name, ts):
                 continue
-            # gcloud storage rm does not accept --project or --quiet flags;
-            # call _run() directly rather than routing through _delete().
-            label = f"Bucket/{name}"
-            if self.dry_run:
-                log.info("[DRY-RUN] Would delete %s", label)
-                self.deleted += 1
-            else:
-                log.info("Deleting %s", label)
-                _, rc = _run(["gcloud", "storage", "rm", "--recursive", f"gs://{name}"])
-                if rc != 0:
-                    log.error("FAILED to delete %s", label)
-                    self.errors += 1
-                else:
-                    self.deleted += 1
+            # gcloud storage rm does not accept --project; pass include_project=False.
+            self._delete(
+                f"Bucket/{name}",
+                ["gcloud", "storage", "rm", "--recursive", f"gs://{name}"],
+                include_project=False,
+            )
 
     def clean_firewall_rules(self) -> None:
         log.info("=== FirewallRule ===")
