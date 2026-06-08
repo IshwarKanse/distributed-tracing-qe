@@ -1,0 +1,37 @@
+# MCOA renders the stanza into a child OpenTelemetryCollector with a fixed
+# naming convention: name "mcoa-instance" in namespace "mcoa-opentelemetry"
+# (the spoke target). MCOA also flips managementState from "unmanaged" (the
+# stanza) to "managed" (the rendered copy).
+#
+# These names were validated against MCOA v0.0.1 + chart "tracing-1.0.0".
+# See the chart in stolostron/multicluster-observability-addon under
+# internal/addon/manifests/charts/mcoa/charts/tracing/ if names change.
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: mcoa-instance
+  namespace: mcoa-opentelemetry
+  labels:
+    app: tracing
+    release: multicluster-observability-addon
+spec:
+  managementState: managed
+  mode: deployment
+---
+# The OTel Operator materialises the collector as a Deployment with the
+# "<name>-collector" suffix.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcoa-instance-collector
+  namespace: mcoa-opentelemetry
+status:
+  readyReplicas: 1
+---
+# Service the collector exposes for OTLP ingestion (used by step 04 telemetrygen).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcoa-instance-collector
+  namespace: mcoa-opentelemetry

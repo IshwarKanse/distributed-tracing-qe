@@ -1,0 +1,8 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: generate-traces
+  namespace: chainsaw-mcoa-traces-smoke
+status:
+  succeeded: 1

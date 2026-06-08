@@ -1,0 +1,28 @@
+# Assert TempoStack landed by checking its child workloads are Ready.
+# Asserting on TempoStack.status.conditions directly is fragile because the
+# operator may publish transient "Failed" or "Pending" conditions even when
+# the stack is healthy (length-of-slices mismatch in chainsaw).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo-smoke-distributor
+  namespace: chainsaw-mcoa-traces-smoke
+status:
+  readyReplicas: 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo-smoke-query-frontend
+  namespace: chainsaw-mcoa-traces-smoke
+status:
+  readyReplicas: 1
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo-smoke-ingester
+  namespace: chainsaw-mcoa-traces-smoke
+status:
+  readyReplicas: 1

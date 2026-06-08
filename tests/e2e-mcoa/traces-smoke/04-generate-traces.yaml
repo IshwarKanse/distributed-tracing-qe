@@ -1,0 +1,24 @@
+# Fire OTLP/gRPC traces into the rendered MCOA collector. MCOA renders the
+# stanza into name "mcoa-instance" / namespace "mcoa-opentelemetry" (the OTel
+# Operator then names the Service "mcoa-instance-collector"). The pipeline
+# configured in 02 forwards from this collector to the TempoStack distributor.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: generate-traces
+  namespace: chainsaw-mcoa-traces-smoke
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: telemetrygen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest@sha256:d16e57246f71cb0b94390226bae23bb5b55d6a0fa5b0d067edf6e370a12e9799
+          args:
+            - traces
+            - --otlp-endpoint=mcoa-instance-collector.mcoa-opentelemetry.svc.cluster.local:4317
+            - --otlp-insecure
+            - --service=mcoa-traces-smoke
+            - --traces=20
