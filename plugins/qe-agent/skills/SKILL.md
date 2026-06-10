@@ -456,30 +456,34 @@ Patch the operator CSV to add `--zap-log-level=debug`. This causes OLM to restar
 
 For the **OpenTelemetry Operator**:
 ```bash
-# Filter by name — AllNamespaces installs have multiple CSVs in the namespace
-CSV_NAME=$(oc get csv -n opentelemetry-operator-system --no-headers | awk '/opentelemetry-operator/{print $1}' | head -1)
+# Filter by name AND Succeeded phase — during upgrades both old and new CSVs coexist in the namespace
+CSV_NAME=$(oc get csv -n opentelemetry-operator-system --no-headers \
+  | awk '/opentelemetry-operator/ && /Succeeded/ {print $1}' | head -1)
 # Show current args to confirm --zap-log-level is present (it is set to 'info' by default)
-oc get csv ${CSV_NAME} -n opentelemetry-operator-system \
-  -o jsonpath='{.spec.install.spec.deployments[0].spec.template.spec.containers[0].args}' | python3 -c "import sys,json; [print(a) for a in json.load(sys.stdin)]"
+oc get csv "${CSV_NAME}" -n opentelemetry-operator-system \
+  -o jsonpath='{range .spec.install.spec.deployments[0].spec.template.spec.containers[0].args[*]}{.}{"\n"}{end}'
 
-# Find the index of the existing --zap-log-level arg and replace its value with debug
-ZAP_IDX=$(oc get csv ${CSV_NAME} -n opentelemetry-operator-system \
-  -o jsonpath='{.spec.install.spec.deployments[0].spec.template.spec.containers[0].args}' \
-  | python3 -c "import sys,json; args=json.load(sys.stdin); print(next(i for i,a in enumerate(args) if 'zap-log-level' in a))")
-oc patch csv ${CSV_NAME} -n opentelemetry-operator-system --type=json \
+# Find the 0-based index of the existing --zap-log-level arg and replace its value with debug
+ZAP_IDX=$(oc get csv "${CSV_NAME}" -n opentelemetry-operator-system \
+  -o jsonpath='{range .spec.install.spec.deployments[0].spec.template.spec.containers[0].args[*]}{.}{"\n"}{end}' \
+  | awk '/--zap-log-level/{print NR-1; exit}')
+if [[ -z "${ZAP_IDX}" ]]; then echo "ERROR: --zap-log-level not found in CSV args"; exit 1; fi
+oc patch csv "${CSV_NAME}" -n opentelemetry-operator-system --type=json \
   -p="[{\"op\":\"replace\",\"path\":\"/spec/install/spec/deployments/0/spec/template/spec/containers/0/args/${ZAP_IDX}\",\"value\":\"--zap-log-level=debug\"}]"
 ```
 
 For the **Tempo Operator**:
 ```bash
-CSV_NAME=$(oc get csv -n openshift-tempo-operator --no-headers | awk '/tempo-operator/{print $1}' | head -1)
-oc get csv ${CSV_NAME} -n openshift-tempo-operator \
-  -o jsonpath='{.spec.install.spec.deployments[0].spec.template.spec.containers[0].args}' | python3 -c "import sys,json; [print(a) for a in json.load(sys.stdin)]"
+CSV_NAME=$(oc get csv -n openshift-tempo-operator --no-headers \
+  | awk '/tempo-operator/ && /Succeeded/ {print $1}' | head -1)
+oc get csv "${CSV_NAME}" -n openshift-tempo-operator \
+  -o jsonpath='{range .spec.install.spec.deployments[0].spec.template.spec.containers[0].args[*]}{.}{"\n"}{end}'
 
-ZAP_IDX=$(oc get csv ${CSV_NAME} -n openshift-tempo-operator \
-  -o jsonpath='{.spec.install.spec.deployments[0].spec.template.spec.containers[0].args}' \
-  | python3 -c "import sys,json; args=json.load(sys.stdin); print(next(i for i,a in enumerate(args) if 'zap-log-level' in a))")
-oc patch csv ${CSV_NAME} -n openshift-tempo-operator --type=json \
+ZAP_IDX=$(oc get csv "${CSV_NAME}" -n openshift-tempo-operator \
+  -o jsonpath='{range .spec.install.spec.deployments[0].spec.template.spec.containers[0].args[*]}{.}{"\n"}{end}' \
+  | awk '/--zap-log-level/{print NR-1; exit}')
+if [[ -z "${ZAP_IDX}" ]]; then echo "ERROR: --zap-log-level not found in CSV args"; exit 1; fi
+oc patch csv "${CSV_NAME}" -n openshift-tempo-operator --type=json \
   -p="[{\"op\":\"replace\",\"path\":\"/spec/install/spec/deployments/0/spec/template/spec/containers/0/args/${ZAP_IDX}\",\"value\":\"--zap-log-level=debug\"}]"
 ```
 
