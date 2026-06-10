@@ -322,9 +322,9 @@ Run all of the following. Capture output that is relevant to the failure (errors
 
 ```bash
 # Operator pod status and logs
-oc get pods -n openshift-opentelemetry-operator
-oc logs -n openshift-opentelemetry-operator deploy/opentelemetry-operator-controller-manager --tail=150
-oc logs -n openshift-opentelemetry-operator deploy/opentelemetry-operator-controller-manager --previous --tail=50 2>/dev/null || true
+oc get pods -n opentelemetry-operator-system
+oc logs -n opentelemetry-operator-system deploy/opentelemetry-operator-controller-manager --tail=150
+oc logs -n opentelemetry-operator-system deploy/opentelemetry-operator-controller-manager --previous --tail=50 2>/dev/null || true
 
 # OpenTelemetryCollector instances across all namespaces
 oc get opentelemetrycollectors --all-namespaces -o wide
@@ -339,12 +339,12 @@ oc get pods -n <test-namespace> -o wide
 oc describe pods -n <test-namespace> | grep -A10 -E 'Events:|Reason:|State:|Exit Code:'
 
 # Events in operator namespace and test namespace
-oc get events -n openshift-opentelemetry-operator --sort-by='.lastTimestamp' | tail -20
+oc get events -n opentelemetry-operator-system --sort-by='.lastTimestamp' | tail -20
 oc get events -n <test-namespace> --sort-by='.lastTimestamp' | tail -30
 
 # CSV and subscription status
-oc get csv -n openshift-opentelemetry-operator -o jsonpath='{range .items[*]}{.metadata.name}: {.status.phase} — {.status.message}{"\n"}{end}'
-oc get subscription -n openshift-opentelemetry-operator -o jsonpath='{range .items[*]}{.metadata.name}: {.status.currentCSV} state={.status.state}{"\n"}{end}' 2>/dev/null || true
+oc get csv -n opentelemetry-operator-system -o jsonpath='{range .items[*]}{.metadata.name}: {.status.phase} — {.status.message}{"\n"}{end}'
+oc get subscription -n opentelemetry-operator-system -o jsonpath='{range .items[*]}{.metadata.name}: {.status.currentCSV} state={.status.state}{"\n"}{end}' 2>/dev/null || true
 ```
 
 #### Tempo Operator
@@ -434,6 +434,96 @@ Classify as `TEST_ISSUE` when the test itself is wrong or stale:
 - Missing prerequisite in the test setup (e.g., a CRD that must be installed before the test runs but isn't part of the test's `setup` steps)
 - Assertion checks a field or value that changed in the operator API (e.g., a renamed status condition)
 - Cypress test references a UI element selector that changed in the console plugin
+
+### Cluster Instability indicators
+When MCP updating or operator restarts are present and tests pass cleanly on rerun, **do not classify as `CLUSTER_INSTABILITY` yet** — first rule out the operator itself as the source of API server pressure using the steps below. Only after confirming the operator is not looping can you attribute the instability to external infra churn.
+
+Classify as `CLUSTER_INSTABILITY` when **all four** conditions hold:
+- MCPs were updating (`UPDATING=True`, `UPDATED=False`) at the time of the original test run, **or** the operator pod shows `RESTARTS > 0` with liveness/readiness probe failures or leader election loss events correlated with MCP rollout timing
+- Tests pass cleanly and quickly on all reruns (rerun duration significantly less than the original failing run)
+- No code defect identified in either the operator or the test
+- Operator debug logs (collected below) show **no tight reconciliation loops** driving excessive API server calls
+
+`CLUSTER_INSTABILITY` takes precedence over `FLAKY`: if all 4 reruns pass cleanly AND the MCP or operator restart evidence points to infrastructure churn during the original run (and the operator is not looping), classify as `CLUSTER_INSTABILITY`, not `FLAKY`. Proceed to Step 5d instead of Step 5c.
+
+#### Ruling out operator-caused API server pressure
+
+Operator reconciliation loops — where the operator continuously re-queues the same object without back-off — can themselves drive enough API server load to cause liveness probe timeouts and leader election flaps, which looks identical to external infra churn. Check this before concluding the infrastructure is at fault.
+
+**Step 1 — Enable debug logging on the operator CSV**
+
+Patch the operator CSV to add `--zap-log-level=debug`. This causes OLM to restart the operator pod with verbose reconciliation logging.
+
+For the **OpenTelemetry Operator**:
+```bash
+# Filter by name AND Succeeded phase — during upgrades both old and new CSVs coexist in the namespace
+CSV_NAME=$(oc get csv -n opentelemetry-operator-system --no-headers \
+  | awk '/opentelemetry-operator/ && /Succeeded/ {print $1}' | head -1)
+# Show current args to confirm --zap-log-level is present (it is set to 'info' by default)
+oc get csv "${CSV_NAME}" -n opentelemetry-operator-system \
+  -o jsonpath='{range .spec.install.spec.deployments[0].spec.template.spec.containers[0].args[*]}{.}{"\n"}{end}'
+
+# Find the 0-based index of the existing --zap-log-level arg and replace its value with debug
+ZAP_IDX=$(oc get csv "${CSV_NAME}" -n opentelemetry-operator-system \
+  -o jsonpath='{range .spec.install.spec.deployments[0].spec.template.spec.containers[0].args[*]}{.}{"\n"}{end}' \
+  | awk '/--zap-log-level/{print NR-1; exit}')
+if [[ -z "${ZAP_IDX}" ]]; then echo "ERROR: --zap-log-level not found in CSV args"; exit 1; fi
+oc patch csv "${CSV_NAME}" -n opentelemetry-operator-system --type=json \
+  -p="[{\"op\":\"replace\",\"path\":\"/spec/install/spec/deployments/0/spec/template/spec/containers/0/args/${ZAP_IDX}\",\"value\":\"--zap-log-level=debug\"}]"
+```
+
+For the **Tempo Operator**:
+```bash
+CSV_NAME=$(oc get csv -n openshift-tempo-operator --no-headers \
+  | awk '/tempo-operator/ && /Succeeded/ {print $1}' | head -1)
+oc get csv "${CSV_NAME}" -n openshift-tempo-operator \
+  -o jsonpath='{range .spec.install.spec.deployments[0].spec.template.spec.containers[0].args[*]}{.}{"\n"}{end}'
+
+ZAP_IDX=$(oc get csv "${CSV_NAME}" -n openshift-tempo-operator \
+  -o jsonpath='{range .spec.install.spec.deployments[0].spec.template.spec.containers[0].args[*]}{.}{"\n"}{end}' \
+  | awk '/--zap-log-level/{print NR-1; exit}')
+if [[ -z "${ZAP_IDX}" ]]; then echo "ERROR: --zap-log-level not found in CSV args"; exit 1; fi
+oc patch csv "${CSV_NAME}" -n openshift-tempo-operator --type=json \
+  -p="[{\"op\":\"replace\",\"path\":\"/spec/install/spec/deployments/0/spec/template/spec/containers/0/args/${ZAP_IDX}\",\"value\":\"--zap-log-level=debug\"}]"
+```
+
+Wait for the operator pod to restart with the new flag:
+```bash
+# OpenTelemetry
+oc rollout status deploy/opentelemetry-operator-controller-manager -n opentelemetry-operator-system --timeout=3m
+
+# Tempo
+oc rollout status deploy/tempo-operator-controller -n openshift-tempo-operator --timeout=3m
+```
+
+**Step 2 — Collect debug logs and check for reconciliation loops**
+
+Let the operator run for 2–3 minutes, then collect logs:
+
+```bash
+# OpenTelemetry — capture last 500 lines of debug output
+oc logs -n opentelemetry-operator-system deploy/opentelemetry-operator-controller-manager --tail=500 \
+  | grep -E '"reconcileID"|"Reconciling"|"requeue"|"error"' \
+  | head -100
+
+# Tempo
+oc logs -n openshift-tempo-operator deploy/tempo-operator-controller --tail=500 \
+  | grep -E '"reconcileID"|"Reconciling"|"requeue"|"error"' \
+  | head -100
+```
+
+**Indicators of a reconciliation loop causing pressure:**
+- The same resource name (`"name":"<cr-name>"`) appears in `Reconciling` log lines many times within seconds (more than once every 2–3 seconds is a strong signal)
+- `"requeue"` entries at very short intervals (sub-second) with no intervening `"Reconciling finished"` or success message
+- `controller-runtime` lines reporting queue depth growing (`"queue depth": N` increasing over time)
+- Rate-limiting warnings: `"controller-runtime/controller"` messages like `"Reconciler error"` followed immediately by rapid requeue
+
+**Indicators that the operator is healthy (no loop):**
+- `Reconciling` log lines appear infrequently (one reconcile per object per event, with gaps of 10+ seconds between repeated reconciles for the same object)
+- No `requeue` entries on short intervals
+- Log volume is low and stable
+
+If a reconciliation loop is found, reclassify as `PRODUCT_BUG` (the operator is mis-behaving under load) and write a bug report in Step 5b. Include the relevant log lines as evidence.
 
 When genuinely ambiguous, gather more cluster evidence before deciding. Explain your reasoning explicitly in the output.
 
@@ -527,7 +617,7 @@ Do not attempt to fix the operator code. Instead, write `${ARTIFACT_DIR}/bug-rep
 
 ## Affected component
 - Operator: <OpenTelemetry Operator / Tempo Operator / Tracing UI>
-- Namespace: <openshift-opentelemetry-operator | openshift-tempo-operator>
+- Namespace: <opentelemetry-operator-system | openshift-tempo-operator>
 - Failing test: <suite / test case>
 
 ## Reproduction
@@ -561,9 +651,52 @@ Do not attempt to fix the operator code. Instead, write `${ARTIFACT_DIR}/bug-rep
 
 ---
 
+## Step 5d — If CLUSTER_INSTABILITY: Write Incident Note
+
+Do not attempt to fix the operator or test code. Write `${ARTIFACT_DIR}/cluster-instability-report.md`:
+
+```markdown
+# Cluster Instability Report
+
+## Summary
+<one-sentence description — e.g. "Operator restarted 3 times due to MCP rollout during the test run, causing spurious failures.">
+
+## Affected Tests
+| Suite | Test Case | Original Duration | Rerun Duration |
+|---|---|---|---|
+| <suite> | <test-case> | <Xs> | <Ys> |
+
+## Root Cause
+<What was happening on the cluster: MCP updates, node evictions, API server timeouts, operator pod CrashLoopBackOff / leader election loss. Include the MCP status snapshot captured in Step 0a.>
+
+## Evidence
+
+### MachineConfigPool status at triage time
+```text
+<oc get machineconfigpools output showing UPDATING=True or UPDATED=False>
+```
+
+### Operator pod restarts and events
+```text
+<relevant pod status, events, liveness probe failures, leader election lines>
+```
+
+## Rerun Results
+All reruns passed cleanly — failures are not reproducible outside the original cluster instability window.
+
+## Recommendation
+Rerun the CI job. The failures are caused by cluster infrastructure churn, not by a product or test defect.
+```
+
+---
+
 ## Step 6 — Write Analysis Summary
 
-Always write `${ARTIFACT_DIR}/qe-agent-analysis.md` as the final step, regardless of outcome:
+Write `${ARTIFACT_DIR}/qe-agent-analysis.md` **immediately after each test is diagnosed** (after Step 4/5a/5b/5c/5d is complete for that test), not at the very end. If multiple tests are being investigated sequentially, write an initial draft after the first test is diagnosed and overwrite it after each subsequent test is diagnosed. This ensures the report is present in `${ARTIFACT_DIR}` — and therefore uploaded by the sidecar — even if the session is interrupted before all tests are fully processed.
+
+Do not wait for background flakiness confirmation runs to finish before writing the first draft. Write a partial entry for in-progress tests (e.g. "Rerun 1: PASS — flakiness confirmation in progress") and overwrite with final results when the runs complete.
+
+Throughout the run, note any place where a skill step was wrong, incomplete, or had to be adapted — commands that failed, assumptions that did not hold, diagnostics that were decisive but not mentioned in the skill, or steps that wasted time. Record all of these in the **Skill Improvement Recommendations** section of the analysis. This feedback is used to improve the skill so future runs are faster, cheaper, and more accurate. If the skill worked as written with no deviations, write "None."
 
 ```markdown
 # QE Agent Analysis
@@ -574,12 +707,12 @@ Always write `${ARTIFACT_DIR}/qe-agent-analysis.md` as the final step, regardles
 | <suite> | <test-case> | <xml-filename> |
 
 ## Rerun Result
-<still failing / passed on rerun (flaky) / not rerun>
+<still failing / passed on rerun (flaky) / passed cleanly (cluster instability) / not rerun>
 
 ## Diagnosis
-**<PRODUCT_BUG | TEST_ISSUE | FLAKY>**
+**<PRODUCT_BUG | TEST_ISSUE | FLAKY | CLUSTER_INSTABILITY>**
 
-<Two to three sentences explaining the reasoning. Reference specific log lines, error messages, or test YAML fields that led to this conclusion.>
+<Two to three sentences explaining the reasoning. Reference specific log lines, error messages, MCP status, or test YAML fields that led to this conclusion.>
 
 ## Rerun Summary
 | Run | Result |
@@ -594,6 +727,20 @@ Always write `${ARTIFACT_DIR}/qe-agent-analysis.md` as the final step, regardles
 <If TEST_ISSUE>: Test fix applied. Changed files in `${ARTIFACT_DIR}/test-fixes/`. See `CHANGES.md` for details.
 <If PRODUCT_BUG>: Bug report written to `${ARTIFACT_DIR}/bug-report.md`.
 <If FLAKY>: Flaky test confirmed (pattern: <e.g. PFPP>). Fix applied to `${ARTIFACT_DIR}/test-fixes/`. See `CHANGES.md` for root cause and fix details.
+<If CLUSTER_INSTABILITY>: Incident note written to `${ARTIFACT_DIR}/cluster-instability-report.md`. Recommendation: rerun the CI job.
+
+## Skill Improvement Recommendations
+<!-- Record any deviation from the skill steps here — wrong commands, missing steps, steps that needed adaptation, or better approaches discovered during this run. Omit this section if the skill worked as written. -->
+<If the skill steps were followed exactly and worked correctly>: None.
+<Otherwise, one bullet per finding>:
+- **Step <N> — <short title>**: <What the skill said to do> → <What actually worked / what was wrong and why>. Suggested fix: <concrete change to the skill>.
+
+Examples of what belongs here:
+- A command in the skill failed and had to be adapted (wrong flag, missing argument, changed API)
+- A diagnostic the skill did not mention turned out to be the decisive evidence
+- A step the skill prescribed was unnecessary or wasted significant time
+- The cleanup approach did not work and a different method had to be used
+- An assumption in the skill (namespace, resource name, container index) did not hold for this operator version
 ```
 
 ---
