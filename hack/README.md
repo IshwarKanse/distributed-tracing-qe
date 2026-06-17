@@ -140,7 +140,7 @@ Resources that fail either check are logged as `Skip` and counted in the `skippe
 
 The script logs one line per resource:
 
-```
+```text
 [INFO] Skip ci-op-<id>-apiserver    (newer than 6h)
 [INFO] Deleting ForwardingRule/global/ci-op-<id>-apiserver
 [WARN] Already gone ForwardingRule/… (resource not found — likely cleaned by CI)
@@ -149,7 +149,7 @@ The script logs one line per resource:
 
 Final summary line:
 
-```
+```text
 Done — deleted=6  skipped=219  warnings=0  errors=0
 ```
 

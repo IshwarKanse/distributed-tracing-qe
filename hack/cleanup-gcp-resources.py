@@ -59,9 +59,7 @@ DEFAULT_MAX_AGE_HOURS = 6
 _NOT_FOUND_PHRASES = frozenset([
     "was not found",
     "does not exist",
-    "not found",
     "resource not found",
-    "no such",
 ])
 
 logging.basicConfig(
@@ -99,8 +97,9 @@ def gcloud_list(*args, project: str, fmt: str = "json") -> list[dict]:
     cmd = ["gcloud", *args, f"--format={fmt}", "--quiet", "--project", project]
     stdout, _stderr, rc = _run(cmd)
     if rc != 0:
-        log.warning("gcloud list failed (rc=%d): %s", rc, _stderr.splitlines()[0] if _stderr else "(no output)")
-        return []
+        msg = _stderr.splitlines()[0] if _stderr else "(no output)"
+        log.error("gcloud list failed (rc=%d): %s", rc, msg)
+        raise RuntimeError(f"gcloud list (rc={rc}): {msg}")
     if not stdout:
         return []
     try:
@@ -154,6 +153,16 @@ class GCPCleaner:
         self.skipped = 0
         self.warnings = 0
         self.errors = 0
+
+    # -- stage runner --------------------------------------------------------
+
+    def _run_clean(self, fn) -> None:
+        """Run a clean_* stage; catch list-API failures and record them as errors."""
+        try:
+            fn()
+        except RuntimeError as exc:
+            log.error("List operation failed, stage aborted: %s", exc)
+            self.errors += 1
 
     # -- eligibility ---------------------------------------------------------
 
@@ -321,7 +330,12 @@ class GCPCleaner:
 
     def _delete_dns_records(self, zone: str) -> bool:
         """Delete all non-NS/SOA records from *zone*. Returns True when all succeeded."""
-        records = gcloud_list("dns", "record-sets", "list", "--zone", zone, project=self.project)
+        try:
+            records = gcloud_list("dns", "record-sets", "list", "--zone", zone, project=self.project)
+        except RuntimeError as exc:
+            log.error("Failed to list DNS records for zone %s: %s", zone, exc)
+            self.errors += 1
+            return False
         all_ok = True
         for record in records:
             rtype = record.get("type", "")
@@ -539,11 +553,16 @@ class GCPCleaner:
         the oldest remaining key will appear recent and the SA will be skipped
         until the new key ages past the threshold.
         """
-        keys = gcloud_list(
-            "iam", "service-accounts", "keys", "list",
-            "--iam-account", email, "--managed-by=user",
-            project=self.project,
-        )
+        try:
+            keys = gcloud_list(
+                "iam", "service-accounts", "keys", "list",
+                "--iam-account", email, "--managed-by=user",
+                project=self.project,
+            )
+        except RuntimeError as exc:
+            log.error("Failed to list keys for SA %s: %s", email, exc)
+            self.errors += 1
+            return None
         if not keys:
             return None
         times = [k.get("validAfterTime") for k in keys if k.get("validAfterTime")]
@@ -562,23 +581,25 @@ class GCPCleaner:
         )
 
         # Dependency-ordered: each group must finish before the next starts.
-        self.clean_forwarding_rules()           # before TargetTcpProxy
-        self.clean_target_tcp_proxies()
-        self.clean_backend_services()
-        self.clean_health_checks()
-        self.clean_addresses()                  # after ForwardingRule releases IPs
-        self.clean_dns_zones()
-        self.clean_storage_buckets()
-        self.clean_firewall_rules()
-        self.clean_managed_instance_groups()    # auto-deletes worker instances
-        self.clean_compute_instances()          # master, bastion, remaining workers
-        self.clean_disks()                      # orphaned boot disks
-        self.clean_instance_templates()         # worker templates
-        self.clean_unmanaged_instance_groups()  # master groups, now empty
-        self.clean_routers()                    # Cloud NAT must precede Subnetwork
-        self.clean_subnetworks()
-        self.clean_networks()
-        self.clean_service_accounts()
+        # _run_clean catches RuntimeError from gcloud list failures so one bad
+        # stage does not abort subsequent independent stages.
+        self._run_clean(self.clean_forwarding_rules)           # before TargetTcpProxy
+        self._run_clean(self.clean_target_tcp_proxies)
+        self._run_clean(self.clean_backend_services)
+        self._run_clean(self.clean_health_checks)
+        self._run_clean(self.clean_addresses)                  # after ForwardingRule releases IPs
+        self._run_clean(self.clean_dns_zones)
+        self._run_clean(self.clean_storage_buckets)
+        self._run_clean(self.clean_firewall_rules)
+        self._run_clean(self.clean_managed_instance_groups)    # auto-deletes worker instances
+        self._run_clean(self.clean_compute_instances)          # master, bastion, remaining workers
+        self._run_clean(self.clean_disks)                      # orphaned boot disks
+        self._run_clean(self.clean_instance_templates)         # worker templates
+        self._run_clean(self.clean_unmanaged_instance_groups)  # master groups, now empty
+        self._run_clean(self.clean_routers)                    # Cloud NAT must precede Subnetwork
+        self._run_clean(self.clean_subnetworks)
+        self._run_clean(self.clean_networks)
+        self._run_clean(self.clean_service_accounts)
 
         log.info(
             "Done — deleted=%d  skipped=%d  warnings=%d  errors=%d",
